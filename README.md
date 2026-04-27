@@ -104,6 +104,3 @@ If your RPC node is under heavy load, use a Geyser gRPC endpoint (`GEYSER_ENDPOI
 
 When running the binary on macOS, you may see "cannot be opened because the developer cannot be verified." Go to **System Settings > Privacy & Security** and click **Allow Anyway**, then run the binary again.
 
----
-
-Copyright (c) 2025 OKX. All rights reserved.

@@ -1,0 +1,9 @@
+.env
+*.log
+*.tar.gz
+*.zip
+pallas
+pallas-*
+tmp/
+.DS_Store
+settings.local.json

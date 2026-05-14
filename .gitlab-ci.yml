@@ -1,0 +1,162 @@
+include:
+  - component: gitlab.okg.com/devops-public/components/security/cis-vulnerability-scanner@okone-default
+
+stages:
+  - Code Check
+  - release
+
+release-to-github:
+  stage: release
+  only:
+    - tags
+  except:
+    - branches
+  image: debian:bookworm-slim
+  variables:
+    GITHUB_REPO: "okx/dex-solana-binary"
+    EXPECTED_BINARIES: "pallas-darwin-aarch64 pallas-darwin-x86_64 pallas-linux-x86_64"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl zip jq git > /dev/null 2>&1
+  script:
+    - |
+      set -euo pipefail
+      TAG="${CI_COMMIT_TAG}"
+      echo "==> Releasing ${TAG} to GitHub (${GITHUB_REPO})..."
+
+      # ── 0. Fetch files from release branch ────────────────────────
+      echo "==> Fetching files from release branch..."
+      RELEASE_DIR="release-assets"
+      mkdir -p "${RELEASE_DIR}"
+      if ! git fetch origin release 2>/dev/null; then
+        echo "Error: release branch does not exist on remote"
+        echo "  Please create the release branch and push binaries first"
+        exit 1
+      fi
+      git --work-tree="${RELEASE_DIR}" checkout origin/release -- \
+        pallas-darwin-aarch64 pallas-darwin-x86_64 pallas-linux-x86_64
+      # Fetch README.md (try common case variants)
+      README_FETCHED=""
+      for f in README.md readme.md Readme.md README.MD; do
+        if git cat-file -e "origin/release:${f}" 2>/dev/null; then
+          git --work-tree="${RELEASE_DIR}" checkout origin/release -- "${f}"
+          README_FETCHED="${f}"
+          break
+        fi
+      done
+      cd "${RELEASE_DIR}"
+      echo "  OK: Files fetched from release branch"
+
+      # ── 1. Validate binaries ──────────────────────────────────────
+      echo "==> Checking binary files..."
+      MISSING=""
+      for bin in ${EXPECTED_BINARIES}; do
+        if [ ! -f "${bin}" ]; then
+          MISSING="${MISSING} ${bin}"
+        fi
+      done
+      if [ -n "${MISSING}" ]; then
+        echo "Error: Missing binary files on release branch:${MISSING}"
+        exit 1
+      fi
+      echo "  OK: 3 binary files found"
+
+      # ── 2. Validate README.md ─────────────────────────────────────
+      echo "==> Checking README.md..."
+      if [ -z "${README_FETCHED}" ]; then
+        echo "Error: README.md not found on release branch (case-insensitive)"
+        exit 1
+      fi
+      README_FILE="${README_FETCHED}"
+      if [ ! -s "${README_FILE}" ]; then
+        echo "Error: ${README_FILE} is empty"
+        exit 1
+      fi
+      echo "  OK: ${README_FILE} found and non-empty"
+
+      # ── 3. Check GitHub release does not exist ────────────────────
+      echo "==> Checking if release ${TAG} already exists on GitHub..."
+      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -H "Authorization: token ${GITHUB_TOKEN}" \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${TAG}")
+      if [ "${HTTP_CODE}" = "200" ]; then
+        echo "Error: Release ${TAG} already exists on GitHub"
+        echo "  To re-release, first delete the existing release and tag on GitHub, then re-tag in GitLab"
+        exit 1
+      fi
+      echo "  OK: Release ${TAG} does not exist"
+
+      # ── 4. Zip binaries ───────────────────────────────────────────
+      echo "==> Zipping binaries..."
+      for bin in ${EXPECTED_BINARIES}; do
+        zip "${bin}.zip" "${bin}"
+        echo "  Created ${bin}.zip"
+      done
+
+      # ── 5. Create GitHub release ──────────────────────────────────
+      echo "==> Creating GitHub release ${TAG}..."
+      RELEASE_NOTES=$(cat "${README_FILE}")
+      RELEASE_PAYLOAD=$(jq -n \
+        --arg tag "${TAG}" \
+        --arg name "${TAG}" \
+        --arg body "${RELEASE_NOTES}" \
+        '{tag_name: $tag, name: $name, body: $body, draft: true, prerelease: false}')
+
+      RELEASE_RESPONSE=$(curl -s -X POST \
+        -H "Authorization: token ${GITHUB_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${RELEASE_PAYLOAD}" \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases")
+
+      RELEASE_ID=$(echo "${RELEASE_RESPONSE}" | jq -r '.id')
+      if [ "${RELEASE_ID}" = "null" ] || [ -z "${RELEASE_ID}" ]; then
+        echo "Error: Failed to create release"
+        echo "${RELEASE_RESPONSE}" | jq .
+        exit 1
+      fi
+      echo "  Release created, ID: ${RELEASE_ID}"
+
+      # ── 6. Upload assets ──────────────────────────────────────────
+      echo "==> Uploading assets..."
+      UPLOAD_URL="https://uploads.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}/assets"
+      for bin in ${EXPECTED_BINARIES}; do
+        ZIP_FILE="${bin}.zip"
+        echo "  Uploading ${ZIP_FILE}..."
+        UPLOAD_RESPONSE=$(curl -s -X POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Content-Type: application/zip" \
+          --data-binary "@${ZIP_FILE}" \
+          "${UPLOAD_URL}?name=${ZIP_FILE}")
+
+        ASSET_STATE=$(echo "${UPLOAD_RESPONSE}" | jq -r '.state')
+        if [ "${ASSET_STATE}" != "uploaded" ]; then
+          echo "Error: Failed to upload ${ZIP_FILE}"
+          echo "${UPLOAD_RESPONSE}" | jq .
+          echo "==> Cleaning up draft release ${RELEASE_ID}..."
+          curl -s -X DELETE \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}"
+          echo "  Draft release deleted"
+          exit 1
+        fi
+        echo "  OK: ${ZIP_FILE} uploaded"
+      done
+
+      # ── 7. Publish release (draft → public) ────────────────────────
+      echo "==> Publishing release (draft -> public)..."
+      PUBLISH_RESPONSE=$(curl -s -X PATCH \
+        -H "Authorization: token ${GITHUB_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{"draft": false}' \
+        "https://api.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}")
+
+      IS_DRAFT=$(echo "${PUBLISH_RESPONSE}" | jq -r '.draft')
+      if [ "${IS_DRAFT}" != "false" ]; then
+        echo "Error: Failed to publish release, still in draft state"
+        echo "  Please manually publish at: https://github.com/${GITHUB_REPO}/releases"
+        exit 1
+      fi
+
+      # ── Done ──────────────────────────────────────────────────────
+      echo ""
+      echo "=== Release ${TAG} published ==="
+      echo "  https://github.com/${GITHUB_REPO}/releases/tag/${TAG}"

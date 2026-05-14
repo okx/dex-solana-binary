@@ -97,7 +97,7 @@ release-to-github:
         --arg tag "${TAG}" \
         --arg name "${TAG}" \
         --arg body "${RELEASE_NOTES}" \
-        '{tag_name: $tag, name: $name, body: $body, draft: true, prerelease: false}')
+        '{tag_name: $tag, target_commitish: "master", name: $name, body: $body, draft: true, prerelease: false}')
 
       RELEASE_RESPONSE=$(curl -s -X POST \
         -H "Authorization: token ${GITHUB_TOKEN}" \

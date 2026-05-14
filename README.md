@@ -1,148 +1,42 @@
-# Glossary
+# swap-pallas-release CI
 
-For key terms (Geyser, Geyser gRPC, Yellowstone, Richat, AMM), see [Glossary](docs/glossary.md).
+本分支 (main) 仅用于存放 GitLab CI 配置，负责自动化发布 pallas 二进制到 GitHub Release。
 
-# Overview
+## 分支说明
 
-Pallas is an OKX-built DEX aggregator client deployed on user infrastructure, providing on-chain AMM quoting and transaction building.
+| 分支 | 用途 |
+|------|------|
+| main | CI 配置（本分支） |
+| master | 文档，同步到 GitHub |
+| release | 存储编译好的二进制文件 |
 
-Core capabilities:
+## 发布流程
 
-- Real-time on-chain AMM pool state via gRPC (Geyser) streaming + RPC polling
-- Local multi-hop optimal route computation and transaction building
-- HTTP API endpoints (`/swap`, `/swap-instruction`, etc.)
-- Prometheus monitoring metrics
+1. 在其他服务器编译 pallas 二进制文件（3 个平台）
+2. 通过 MR 将二进制文件和 README.md 提交到 release 分支
+3. 在 main 分支打 tag 触发发布：
+   ```bash
+   git checkout main
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+4. GitLab CI 自动执行：安全扫描 -> 从 release 分支拉取文件 -> zip 压缩 -> 发布到 GitHub Release
 
-# Prerequisites
+## 发布产物
 
-- OKX **API Key**, **Secret Key**, and **Passphrase** (for HMAC signature authentication) **[Apply here for whitelist](https://form.typeform.com/to/k0Axsial)**
-- A Solana RPC endpoint
-- Recommended: a Geyser gRPC endpoint (Yellowstone or Richat) to significantly reduce RPC node load and improve data freshness
-- Download the Pallas binary **[Download](https://github.com/okx/dex-solana-binary/releases)**
-- Hardware requirements: recommended 8 cores / 16 GB RAM / 100 GB SSD
+发布到 GitHub `okx/dex-solana-binary`，包含：
+- pallas-darwin-aarch64.zip
+- pallas-darwin-x86_64.zip
+- pallas-linux-x86_64.zip
 
-# Quick Start
+## 异常处理
 
-## Option 1: Run the Binary Directly
+- tag 打错：删除 GitLab tag，删除 GitHub Release，重新打 tag
+- GitHub 已有同名 Release：CI 报错退出，不覆盖
+- 二进制文件缺失/多余：CI 报错退出
+- 上传中途失败：GitHub 上留的是 draft Release，不会公开展示
 
-With gRPC streaming (recommended):
+## 注意事项
 
-```bash
-LOG_LEVEL=info ./pallas \
-  --okx-api-key YOUR_API_KEY \
-  --okx-secret-key YOUR_SECRET_KEY \
-  --okx-passphrase YOUR_PASSPHRASE \
-  --rpc-url YOUR_RPC_URL \
-  --grpc-endpoint YOUR_GRPC_ENDPOINT \
-  --grpc-x-token YOUR_X_TOKEN
-```
-
-With RPC polling only (higher node load, not recommended):
-
-```bash
-LOG_LEVEL=info ./pallas \
-  --okx-api-key YOUR_API_KEY \
-  --okx-secret-key YOUR_SECRET_KEY \
-  --okx-passphrase YOUR_PASSPHRASE \
-  --rpc-url YOUR_RPC_URL
-```
-
-## Option 2: Use an Environment File
-
-Create a `.env` file with the required parameters:
-
-```bash
-OKX_API_KEY=<your-api-key>
-OKX_SECRET_KEY=<your-secret-key>
-OKX_PASSPHRASE=<your-passphrase>
-RPC_URL=<your-solana-rpc-url>
-GEYSER_GRPC_ENDPOINT=<your-geyser-grpc-endpoint>
-GEYSER_GRPC_X_TOKEN=<your-geyser-token>
-```
-
-Start:
-
-```bash
-./pallas --env-file .env
-```
-
-## Option 3: Docker Compose
-
-```bash
-git clone https://github.com/okx/dex-solana-binary.git
-cd dex-solana-binary
-# Create .env file as shown in Option 2 above
-docker compose up -d
-```
-
-## Verify Startup
-
-After starting Pallas (any option above), wait for it to reach the Normal state:
-
-```bash
-# Check readiness (returns 200 when ready, 503 otherwise)
-curl http://localhost:9100/ready
-
-# Monitor loading progress
-curl http://localhost:9100/status
-```
-
-Startup typically takes several minutes while Pallas loads market data and syncs on-chain state.
-
-# HTTP Services
-
-Pallas starts two independent HTTP services:
-
-- **Business API** (default `0.0.0.0:8080`): quoting and transaction building endpoints
-- **Ops Metrics** (default `127.0.0.1:9100`): health checks, readiness probes, and monitoring endpoints. Set `METRICS_BIND=0.0.0.0` for external access
-
-## Business API Endpoints (PORT, default 8080)
-
-
-| Endpoint               | Method | Description                                                                                                        |
-| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| `/swap`                | POST   | Quote + transaction building                                                                                       |
-| `/swap-instruction`   | POST   | Quote + decomposed instructions for caller-assembled transactions                                                  |
-| `/program-id-to-label` | GET    | DEX program ID to protocol name mapping                                                                            |
-| `/evict-pools`         | POST   | Ops endpoint: evict specified pools from all caches and routing, persisted to runtime denylist (survives restarts) |
-
-
-## Ops Endpoints (METRICS_PORT, default 9100)
-
-
-| Endpoint   | Method | Description                                                                     |
-| ---------- | ------ | ------------------------------------------------------------------------------- |
-| `/health`  | GET    | Liveness probe, always returns 200                                              |
-| `/ready`   | GET    | Readiness probe, returns 200 when ready, 503 otherwise                          |
-| `/status`  | GET    | Runtime diagnostics (version, state, sanitized config snapshot, dynamic config) |
-| `/metrics` | GET    | Prometheus metrics (text exposition format)                                     |
-
-
-## API Reference
-
-The core business endpoints are `/swap` and `/swap-instruction`. For detailed request parameters, response structures, and examples, see:
-
-- [POST /swap](docs/api-swap.md) — Quote + transaction building (request parameters, response fields, examples)
-- [POST /swap-instruction](docs/api-swap-instruction.md) — Quote + decomposed instructions (assembly order, cycle arbitrage)
-- [GET /program-id-to-label](docs/api-program-id-to-label.md) — DEX program ID to protocol name mapping
-- [POST /evict-pools](docs/api-evict-pools.md) — Runtime pool eviction
-- **[Error Code Reference](docs/api-errors.md)** — Unified error codes for all endpoints
-
-# Configuration
-
-For all configuration options, see [Configuration](docs/configuration.md).
-
-# System State
-
-`/ready` endpoint and `/status` endpoint return the current system state. When it returns Normal, the service is ready to use.
-
-```bash
-curl http://localhost:9100/ready
-curl http://localhost:9100/status
-```
-
-State changes can also be monitored via the `system_state` gauge in `/metrics`.
-
-# Support
-
-For troubleshooting, FAQ, and support, see [Troubleshooting, FAQ & Support](docs/support.md).
+- GitHub Token 过期时间：2027/05/14，届时需要更新 GitLab CI Variable `GITHUB_TOKEN`
+- 只有 Maintainers 可以创建 `v*` tag

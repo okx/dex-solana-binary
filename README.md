@@ -47,6 +47,17 @@ LOG_LEVEL=info ./pallas \
   --rpc-url YOUR_RPC_URL
 ```
 
+### CLI Short Flags
+
+Commonly used flags support short forms:
+
+| Short | Long | Env Var | Description |
+|-------|------|---------|-------------|
+| `-H` | `--host` | `HOST` | HTTP API bind address |
+| `-p` | `--port` | `PORT` | HTTP API listen port |
+| `-e` | `--grpc-endpoint` | `GEYSER_GRPC_ENDPOINT` | Geyser gRPC endpoint |
+| `-x` | `--grpc-x-token` | `GEYSER_GRPC_X_TOKEN` | Geyser gRPC auth token |
+
 ## Option 2: Use an Environment File
 
 Create a `.env` file with the required parameters:

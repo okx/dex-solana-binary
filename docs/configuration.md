@@ -48,7 +48,7 @@ CLI flag names follow the pattern: `FOO_BAR_BAZ` -> `--foo-bar-baz`. For example
 | `YELLOWSTONE_FLUSH_INTERVAL_SECS`      | `30`    | Yellowstone mode: flush interval for pending subscription diffs; controls how often add/remove changes are coalesced and reconnects are triggered |
 | `RICHAT_MAX_PUBKEYS_PER_FILTER`        | `100`   | Max pubkeys per account filter (must be > 0). Richat enforces it as a server limit; Yellowstone uses it to split a large shard subscription into multiple account filters inside one full `SubscribeRequest` |
 | `RICHAT_MAX_FILTERS_PER_SUBSCRIBE`     | `10`    | Richat mode only: max filters per subscribe request (must be >= 2)        |
-| `SOFT_RECONNECT_TIMEOUT_SECS`         | `300`   | Soft-reconnect timeout (seconds); escalates to HardReconnecting (503) when exceeded |
+| `SOFT_RECONNECT_TIMEOUT_SECS`         | `120`   | Soft-reconnect timeout (seconds); escalates to HardReconnecting (503) when exceeded |
 | `SLOT_FRESHNESS_THRESHOLD`             | `50`    | Max allowed slot lag during startup readiness gate                         |
 | `SLOT_FRESHNESS_TIMEOUT_SECS`          | `30`    | Max wait time (seconds) for slot freshness gate at startup                |
 | `GEYSER_AUTO_DETECT_TIMEOUT_MS`        | `2000`  | Geyser auto-detect timeout (ms)                                           |

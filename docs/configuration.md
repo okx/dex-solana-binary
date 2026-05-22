@@ -2,7 +2,7 @@
 
 All parameters can be configured via CLI flags (`--flag-name`) or environment variables.
 
-CLI flag names follow the pattern: `FOO_BAR_BAZ` -> `--foo-bar-baz`. For example, `RPC_MAX_CONCURRENT_REQUESTS` can be set via `--rpc-max-concurrent-requests 50`. Run `pallas --help` for a complete list.
+CLI flag names follow the pattern: `FOO_BAR_BAZ` -> `--foo-bar-baz`. For example, `RPC_MAX_CONCURRENT_REQUESTS` can be set via `--rpc-max-concurrent-requests 100`. Run `pallas --help` for a complete list.
 
 ## Authentication
 
@@ -29,7 +29,7 @@ CLI flag names follow the pattern: `FOO_BAR_BAZ` -> `--foo-bar-baz`. For example
 | `GEYSER_GRPC_COMMITMENT` | `processed`  | Commitment level for gRPC subscriptions and RPC fallback. Valid values: `processed` / `confirmed` / `finalized` (case-insensitive)                                                                            |
 | `SHUTDOWN_TIMEOUT_SECS`  | `1`          | Graceful shutdown timeout (seconds)                                                                                                                                                                           |
 | `HOST`                        | `0.0.0.0`   | Business API bind address                                                                                                                                                                                |
-| `RPC_MAX_CONCURRENT_REQUESTS` | `50`  | Max concurrent RPC `getMultipleAccounts` batch requests. Set to `0` to enable adaptive concurrency (AIMD growth/decay)                                                                                        |
+| `RPC_MAX_CONCURRENT_REQUESTS` | `100` | Max concurrent RPC `getMultipleAccounts` batch requests across both pools (engine fast-lane + pipeline). Raised from 50 to 100 so AIMD has more ceiling headroom; AIMD still throttles back via on_error when endpoint actually thrashes. Set to `0` to enable pure adaptive concurrency. |
 | `RPC_POLL_INTERVAL_MS`   | `200`        | Polling interval in milliseconds (RPC-only mode)                                                                                                                                                              |
 
 
@@ -45,10 +45,10 @@ CLI flag names follow the pattern: `FOO_BAR_BAZ` -> `--foo-bar-baz`. For example
 | `GEYSER_GRPC_RESET_ON_GAP`             | `300`   | Stream gap threshold (seconds) to trigger full RPC backfill; 0 to disable |
 | `GEYSER_GRPC_CHANNEL_UPDATE_CAPACITY`  | `16384` | Internal channel capacity for account updates                             |
 | `GRPC_CONSISTENCY_CHECK_INTERVAL_SECS` | `30`    | Consistency check interval (seconds)                                      |
-| `YELLOWSTONE_FLUSH_INTERVAL_SECS`      | `30`    | Yellowstone mode: flush interval for pending subscription diffs; controls how often add/remove changes are coalesced and reconnects are triggered |
+| `YELLOWSTONE_FLUSH_INTERVAL_SECS`      | `120`   | Yellowstone mode: flush interval for pending subscription diffs. Raised from 30 to 120 so always-reset RPC backfill (25-32s on busy endpoints) can complete before the next flush triggers another reconnect; trade-off is newly-added pools wait up to 60s on average before being gRPC-subscribed (no data loss — biz_tick added-pool path still backfills inline). |
 | `RICHAT_MAX_PUBKEYS_PER_FILTER`        | `100`   | Max pubkeys per account filter (must be > 0). Richat enforces it as a server limit; Yellowstone uses it to split a large shard subscription into multiple account filters inside one full `SubscribeRequest` |
 | `RICHAT_MAX_FILTERS_PER_SUBSCRIBE`     | `10`    | Richat mode only: max filters per subscribe request (must be >= 2)        |
-| `SOFT_RECONNECT_TIMEOUT_SECS`         | `120`   | Soft-reconnect timeout (seconds); escalates to HardReconnecting (503) when exceeded |
+| `SOFT_RECONNECT_TIMEOUT_SECS`         | `600`   | Soft-reconnect timeout (seconds); also caps HardReconnecting wait. Raised from 120 to 600 so transient pipeline thrash can self-heal on stale cache before triggering a full 73k+ pool rebuild |
 | `SLOT_FRESHNESS_THRESHOLD`             | `50`    | Max allowed slot lag during startup readiness gate                         |
 | `SLOT_FRESHNESS_TIMEOUT_SECS`          | `30`    | Max wait time (seconds) for slot freshness gate at startup                |
 | `GEYSER_AUTO_DETECT_TIMEOUT_MS`        | `2000`  | Geyser auto-detect timeout (ms)                                           |

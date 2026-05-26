@@ -41,9 +41,9 @@ Request parameters are identical to [`POST /swap`](api-swap).
 |-------|------|-------------|
 | `tokenLedgerInstruction` | Instruction | Token ledger snapshot instruction (present when `useTokenLedger=true`) |
 | `computeBudgetInstructions` | Instruction[] | Compute budget instructions (CU limit + priority fee) |
-| `setupInstructions` | Instruction[] | Token account creation/initialization instructions |
+| `setupInstructions` | Instruction[] | Token-account housekeeping ran **before** the swap (ATA creation + native-SOL wrap). Always non-empty. See [Setup & Cleanup Instructions](#setup--cleanup-instructions) |
 | `swapInstruction` | Instruction | Core swap instruction |
-| `cleanupInstruction` | Instruction | SOL wrap/unwrap cleanup instruction (null if not needed) |
+| `cleanupInstruction` | Instruction | Token-account housekeeping ran **after** the swap. `null` unless the user is receiving native SOL — in that case it unwraps the wSOL ATA back to native SOL. See [Setup & Cleanup Instructions](#setup--cleanup-instructions) |
 | `otherInstructions` | Instruction[] | Additional instructions (e.g. cyclic arbitrage second leg) |
 | `tipInstruction` | Instruction | Jito tip transfer instruction (present when `tips` is set) |
 | `addressLookupTableAddresses` | String[] | Address Lookup Table Account. Used to optimize the management and referencing of addresses in transactions by storing related addresses in a table and referencing them via index values |
@@ -73,6 +73,123 @@ Request parameters are identical to [`POST /swap`](api-swap).
 |-------|------|-------------|
 | `blockhash` | String | Recent blockhash (base58) |
 | `lastValidBlockHeight` | String | Last valid block height for this blockhash |
+
+---
+
+## Setup & Cleanup Instructions
+
+The `setupInstructions` and `cleanupInstruction` fields handle Solana-specific token-account housekeeping (ATA creation and native-SOL wrap / unwrap). The server fully populates them — callers do **not** need to add their own ATA-creation or wrap logic. Just append them to the transaction in the order shown under [Transaction Assembly Order](#transaction-assembly-order).
+
+> **Native SOL vs wSOL — important.** Throughout this section, "native SOL" means the system-program address `11111111111111111111111111111111`. The wSOL **mint** literal `So11111111111111111111111111111111111111112` is treated as a regular SPL token and does **not** trigger wrap or unwrap.
+
+### setupInstructions
+
+`setupInstructions` is **always non-empty**. Its contents appear in this fixed order:
+
+| # | Segment | Count | When it appears |
+|---|---|---|---|
+| 1 | `createDestinationATA` | always 1 | **Always.** Uses the SPL `CreateIdempotent` variant, so it is a chain-side no-op when the user already owns the destination ATA. For Token-2022 destination mints, this instruction automatically targets the Token-2022 program. |
+| 2 | `createUserIntermediateATA` | 0 or 1 | Only when `enableCyclicArbitrage = true`. Pre-creates the user's intermediate-token ATA so the cyclic-arbitrage `set_token_ledger` step has a valid target. |
+| 3 | `createIntermediateSaATA[…]` | 0 or more | Only when the route has ≥ 2 hops **and** an intermediate mint is not in the server's base-token whitelist (SOL / USDC / USDT / …). These create the router service-account (SA) ATAs that hold balances between hops. |
+| 4 | wSOL **wrap triplet**: `wrapSolCreateATA` + `systemTransfer` + `syncNative` | always 3 (as a unit) | Only when `fromTokenAddress` is native SOL (`11111…1`). The three instructions are always emitted together. |
+
+### cleanupInstruction
+
+Governed by **one rule**:
+
+| `toTokenAddress` | `cleanupInstruction` |
+|---|---|
+| native SOL (`11111…1`) | SPL Token `CloseAccount` on the user's destination wSOL ATA → underlying lamports (rent + token balance) return to the wallet as native SOL |
+| any SPL mint (including the wSOL literal `So11…2`) | `null` |
+
+It does **not** depend on `useTokenLedger`, `enableCyclicArbitrage`, route length, or whether the destination ATA was newly created.
+
+### Examples
+
+Six common scenarios. `U` denotes the user wallet; "wSOL ATA" denotes `U`'s associated token account for the wSOL mint.
+
+#### 1. SPL → SPL, single hop (USDC → USDT)
+
+```
+setupInstructions = [ createDestATA(USDT) ]          // length 1
+cleanupInstruction = null
+```
+
+#### 2. SPL → native SOL (USDC → SOL)
+
+```
+setupInstructions = [ createDestATA(wSOL) ]          // length 1
+cleanupInstruction = closeAccount(U's wSOL ATA)      // unwrap to native SOL
+```
+
+No wrap triplet — the source is an SPL token, not native SOL.
+
+#### 3. native SOL → SPL (SOL → USDC)
+
+```
+setupInstructions = [
+  createDestATA(USDC),
+  wrapCreateATA(wSOL),                               // ┐
+  systemTransfer(amount lamports → U's wSOL ATA),    // │ wrap triplet
+  syncNative(U's wSOL ATA),                          // ┘
+]                                                     // length 4
+cleanupInstruction = null
+```
+
+#### 4. SPL → SPL, three hops (USDC → X → Y → BONK, X and Y both off the whitelist)
+
+```
+setupInstructions = [
+  createDestATA(BONK),
+  createIntermediateSaATA(X),
+  createIntermediateSaATA(Y),
+]                                                     // length 3
+cleanupInstruction = null
+```
+
+If `X` were USDC (on the base-token whitelist), the matching entry would be skipped and the length would drop to 2.
+
+#### 5. Cyclic arbitrage, SPL ⇆ SPL (A → B → A)
+
+```
+setupInstructions = [
+  createDestATA(A),                                  // dest = source = A, still emitted (idempotent)
+  createUserIntermediateATA(B),                      // for set_token_ledger
+  createIntermediateSaATA(B),                        // if B is off the whitelist
+]                                                     // length 3 (or 2 if B is whitelisted)
+cleanupInstruction = null
+```
+
+Note: the cyclic route is split between two ix — `swapInstruction` carries leg-1 (A → B), `otherInstructions[0]` carries leg-2 (B → A). See [Cyclic-arbitrage slippage](#cyclic-arbitrage-slippage).
+
+#### 6. Cyclic arbitrage, native SOL ⇆ native SOL (SOL → B → SOL)
+
+```
+setupInstructions = [
+  createDestATA(wSOL),                               // ┐ both point at U's wSOL ATA;
+  createUserIntermediateATA(B),                      // │ duplication is intentional —
+  createIntermediateSaATA(B),                        // │ do NOT deduplicate client-side.
+  wrapCreateATA(wSOL),                               // ┘
+  systemTransfer(amount lamports → U's wSOL ATA),
+  syncNative(U's wSOL ATA),
+]                                                     // length 6
+cleanupInstruction = closeAccount(U's wSOL ATA)      // unwrap to native SOL
+```
+
+The duplicate wSOL ATA reference (`createDestATA` + `wrapCreateATA`) is by design — `CreateIdempotent` is a chain-side no-op when the account already exists, and keeping the rule uniform makes the four builder paths behave identically.
+
+### Cyclic-arbitrage slippage
+
+When `enableCyclicArbitrage = true`, the route is split into two router instructions:
+
+- **leg-1** lives in `swapInstruction`. Its on-chain `min_out` is hard-coded to `1` (the user-supplied slippage does not apply to the intermediate token, and on-chain rejects `min_out = 0`).
+- **leg-2…N** lives in `otherInstructions[0]`. Its on-chain `min_out` equals the quoted final output of the loop token, with the user-supplied `slippagePercent` rounded to bps. This is the lower bound the user actually cares about.
+
+`tx.minReceiveAmount` (in `routerResult`) reflects the leg-2 bound.
+
+### Empty route
+
+If routing finds no path (e.g. pool data not yet loaded), the endpoint returns HTTP 200 with business error code `NO_ROUTE_FOUND` (see [API errors](api-errors)). Treat it as a transient retry condition.
 
 ---
 

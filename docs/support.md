@@ -32,6 +32,54 @@ Monitoring metrics:
 
 **Restoring an evicted pool:** There is currently no unblock endpoint. To restore a pool, edit `${BLOCKED_POOLS_RUNTIME_FILE}` and/or the `BLOCKED_POOLS` environment variable, then restart Pallas.
 
+## Built-in Checker (--check)
+
+Run `pallas --check` (or `-c`) to execute 9 diagnostic checks and exit without starting the main service. Useful for first-deploy validation or diagnosing runtime issues.
+
+```bash
+./pallas-darwin-aarch64 --env-file .env --check
+./pallas-darwin-aarch64 -c
+```
+
+### Exit Codes
+
+| Code | Meaning | Action |
+|------|---------|--------|
+| 0 | All checks PASS (SKIP is neutral) | Safe to start |
+| 1 | At least one WARN, no FAIL | Proceed with caution |
+| 2 | At least one FAIL | Investigate before starting |
+| 3 | Checker cannot start (config unreadable) | Fix .env / environment |
+
+### Checks Performed
+
+**A-Zone (always run):**
+1. Environment baseline — OS, arch, CPU cores, total memory (WARN if < 6 GB)
+2. Config integrity — required fields, URL format, API key length
+3. Network reachability — Hub HTTP, Hub gRPC, Solana RPC, Geyser gRPC (4 parallel probes)
+4. Hub authentication — HMAC-signed request to verify API key validity
+5. Port occupancy — checks configured ports for conflicts and identifies existing Pallas instances
+
+**B-Zone (only when a local Pallas instance is detected on configured ports):**
+6. Ready probe — `/ready` endpoint status
+7. Startup phase — current loading phase via `/metrics`
+8. Data coverage — pool count and DEX protocol count thresholds
+9. Quote probe — `/quote` endpoint functional test
+
+### Integration Examples
+
+```bash
+# systemd ExecStartPre (block startup on FAIL)
+ExecStartPre=/opt/pallas/pallas --check
+ExecStartPre=/bin/sh -c 'test $? -le 1'
+
+# k8s initContainer
+command: ["./pallas", "--check"]
+```
+
+### Sensitive Data
+
+All output is redacted: home directory paths, URL credentials, query parameters, and standalone tokens (16+ chars) are masked automatically. Terminal output uses ANSI color when connected to a TTY.
+
 # FAQ
 
 **`/ready` returns 503 after startup**

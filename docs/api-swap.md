@@ -8,6 +8,12 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 
 `POST /swap` with JSON body.
 
+### Headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `pallas-debug` | No | Debug switch (presence-only, case-insensitive). When this header is present on the request — with any value, including an empty one — the server logs the full JSON-serialized response at `info` level. Omit the header for normal traffic; requests without it incur zero overhead |
+
 ### Parameters
 
 | Field | Type | Required | Description |
@@ -64,7 +70,7 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `toTokenAddress` | String | Token contract address of the token being bought in this step |
 | `fromTokenIndex` | String | Token index of fromToken in the swap path |
 | `toTokenIndex` | String | Token index of toToken in the swap path |
-| `poolAddress` | String | On-chain address of the liquidity pool used in this step (internal API only) |
+| `poolAddress` | String | On-chain address of the liquidity pool used in this step (base58) |
 | `percent` | String | The percentage of assets handled by the protocol (e.g., `60`) |
 
 ### TxMeta

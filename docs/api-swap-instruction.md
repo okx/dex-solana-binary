@@ -10,6 +10,12 @@ Returns an optimal swap quote and decomposed raw Solana instructions. The caller
 
 Request parameters are identical to [`POST /swap`](api-swap).
 
+### Headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `pallas-debug` | No | Debug switch (presence-only, case-insensitive). When this header is present on the request — with any value, including an empty one — the server logs the full JSON-serialized response at `info` level. Omit the header for normal traffic; requests without it incur zero overhead |
+
 ### Parameters
 
 | Field | Type | Required | Description |

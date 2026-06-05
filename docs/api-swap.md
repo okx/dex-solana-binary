@@ -37,6 +37,35 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `computeUnitLimit` | String | No | Used for transactions on the Solana network and analogous to gasLimit on Ethereum, which ensures that the transaction won't take too much computing resource. If the parameter `tips` is not `0`, then `computeUnitLimit` should be set to `0`. Otherwise, the fee is wasted |
 | `tips` | String | No | Jito tips in lamports. This is used for MEV protection |
 | `useTokenLedger` | Boolean | No | Default is `false`. When `true`, uses token ledger for dynamic input amount detection |
+| `positiveSlippageReceiverAddress` | String | No | Recipient address that captures the positive-slippage portion when the on-chain `actual_amount_out` exceeds the quoted output. Must be paired with `positiveSlippageBps` (XOR — either both fields are set or both are omitted). See [Positive Slippage Capture](#positive-slippage-capture) |
+| `positiveSlippageBps` | Number | No | Positive-slippage capture rate in basis points (1 bps = 0.01%). Range `[0, 1000]` (i.e. ≤ 10%), and must be a multiple of `10` when greater than `0`. Must be paired with `positiveSlippageReceiverAddress`. See [Positive Slippage Capture](#positive-slippage-capture) |
+
+---
+
+## Positive Slippage Capture
+
+When `positiveSlippageReceiverAddress` and `positiveSlippageBps` are both supplied and `bps > 0`, the OKX router contract diverts a bounded share of any positive slippage (i.e. when the actual on-chain output exceeds the quoted output) to the receiver address; the remainder still goes to the user.
+
+**Formula** (contract `swap_with_fees.rs` / `fee.rs`):
+
+```
+trim_rate    = (positiveSlippageBps / 10) as u8        // ∈ [0, 100]
+trim_amount  = min(
+    actual_amount_out - expect_amount_out,             // surplus over quote
+    actual_amount_out × trim_rate / 1_000              // 0.1% precision cap
+)
+```
+
+The trim only fires when the actual output exceeds the quote; if the swap lands at or below the quoted output, nothing is diverted and the receiver gets `0`.
+
+**Behavior notes**:
+
+- Omitting both fields (or supplying `bps = 0`) disables the feature — instruction bytes are bit-for-bit identical to the no-trim path.
+- **Cyclic arbitrage** (`enableCyclicArbitrage = true`): the first leg never applies trim (intermediate-token surplus has no user-protection meaning). The final leg of the cycle applies the user-supplied parameters.
+- **`maxAccounts`**: when trim is enabled, the swap instruction's account list contains one extra slot (the receiver). A request with `maxAccounts = 64` may therefore produce a transaction with 65 accounts. This is well below Solana's 256-account versioned-transaction ceiling.
+- **Protocol restriction (hard contract constraint)**: trim is only valid on SA-proxy protocols (e.g. BisonFi / AlphaQ / ZeroFi / TaurusFi). Enabling trim on a non-SA-proxy protocol (Raydium / Orca / Meteora / …) causes the on-chain instruction to fail with `SaAuthorityIsNone (6056)`. The API does not pre-reject such combinations because the final routed protocol set is not known until quote time — callers must restrict routing via `dexIds` when enabling trim.
+
+See [API errors](api-errors) for the four `INVALID_POSITIVE_SLIPPAGE_*` validation codes.
 
 ---
 

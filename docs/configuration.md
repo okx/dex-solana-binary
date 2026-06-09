@@ -79,7 +79,7 @@ Each parameter is evaluated independently. When set to `0`, auto-allocation foll
 
 | Env Var                | Default  | Description                                                                                                                                                                                     |
 | ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ALLOWED_TOKEN_MINTS`  | Not set  | Token mint allowlist, comma-separated. Loads all if not set                                                                                                                                     |
+| `ALLOWED_TOKEN_MINTS`  | Not set  | Comma-separated list of mint addresses; only markets touching at least two of these mints are loaded. Requires at least 2 addresses when set. If unset, all tokens are allowed |
 | `BLOCKED_DEX_PROGRAMS` | Not set  | DEX program ID denylist, comma-separated                                                                                                                                                        |
 | `ALLOWED_DEX_PROGRAMS` | Not set  | DEX program ID allowlist, comma-separated. Loads all if not set                                                                                                                                 |
 | `BLOCKED_POOLS`        | Not set  | Startup pool denylist, comma-separated base58 pool addresses. Matched pools are excluded from all caches; invalid entries are skipped with a warning. Use `POST /evict-pools` to add at runtime |

@@ -32,6 +32,7 @@ Both endpoints share parameter validation and routing logic; error codes are ide
 | 400  | `INVALID_POSITIVE_SLIPPAGE_BPS`       | `positiveSlippageBps` outside the `[0, 1000]` range (contract `TRIM_RATE_LIMIT = 100`, i.e. ≤ 10%)                       |
 | 400  | `INVALID_POSITIVE_SLIPPAGE_BPS_PRECISION` | `positiveSlippageBps > 0` but not a multiple of `10` (contract `TRIM_DENOMINATOR = 1_000` only resolves 0.1% steps)  |
 | 400  | `INVALID_POSITIVE_SLIPPAGE_RECEIVER`  | `positiveSlippageReceiverAddress` is empty, invalid base58, or not 32 bytes after decoding                                |
+| 400  | `INVALID_EXPECT_AMOUNT_OUT`           | `expectAmountOut` is `"0"` (a zero override would disable on-chain slippage protection). Omitting the field or sending `null` is accepted. |
 
 
 ## Routing Errors

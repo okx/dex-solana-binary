@@ -41,6 +41,7 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `useTokenLedger` | Boolean | No | Default is `false`. When `true`, uses token ledger for dynamic input amount detection |
 | `positiveSlippageReceiverAddress` | String | No | Recipient address that captures the positive-slippage portion when the on-chain `actual_amount_out` exceeds the quoted output. Must be paired with `positiveSlippageBps` (XOR — either both fields are set or both are omitted). See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `positiveSlippageBps` | Number | No | Positive-slippage capture rate in basis points (1 bps = 0.01%). Range `[0, 1000]` (i.e. ≤ 10%), and must be a multiple of `10` when greater than `0`. Must be paired with `positiveSlippageReceiverAddress`. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
+| `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount (the on-chain `min_out` basis). When set, the value is encoded into the `swapInstruction` bytes in place of the quote-derived output; slippage is still applied once on-chain. Must be `> 0` (passing `"0"` returns `INVALID_EXPECT_AMOUNT_OUT`); omitted/`null` leaves behavior unchanged. In cyclic-arbitrage mode it applies to the second leg (`otherInstructions[0]`) only. Note: this response has no `tx.minReceiveAmount` field, so the override is reflected only in the instruction bytes. |
 
 > When trim is enabled (`bps > 0`), the change to `swapInstruction` is minimal and deterministic: the last byte of `swapInstruction.data` changes from `0x00` to `(bps / 10) as u8`, and `swapInstruction.accounts` gains one extra writable, non-signer entry at the tail (the receiver). All other bytes — including `setupInstructions`, `cleanupInstruction`, `otherInstructions`, and the rest of `swapInstruction.data` — are unchanged from the no-trim path. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) for the formula and the SA-proxy protocol restriction.
 
@@ -193,7 +194,7 @@ The duplicate wSOL ATA reference (`createDestATA` + `wrapCreateATA`) is by desig
 When `enableCyclicArbitrage = true`, the route is split into two router instructions:
 
 - **leg-1** lives in `swapInstruction`. Its on-chain `min_out` is hard-coded to `1` (the user-supplied slippage does not apply to the intermediate token, and on-chain rejects `min_out = 0`).
-- **leg-2…N** lives in `otherInstructions[0]`. Its on-chain `min_out` equals the quoted final output of the loop token, with the user-supplied `slippagePercent` rounded to bps. This is the lower bound the user actually cares about.
+- **leg-2…N** lives in `otherInstructions[0]`. Its on-chain `min_out` equals the quoted final output of the loop token (or `expectAmountOut`, when supplied), with the user-supplied `slippagePercent` rounded to bps. This is the lower bound the user actually cares about.
 
 `tx.minReceiveAmount` (in `routerResult`) reflects the leg-2 bound.
 

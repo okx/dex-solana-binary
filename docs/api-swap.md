@@ -39,6 +39,7 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `useTokenLedger` | Boolean | No | Default is `false`. When `true`, uses token ledger for dynamic input amount detection |
 | `positiveSlippageReceiverAddress` | String | No | Recipient address that captures the positive-slippage portion when the on-chain `actual_amount_out` exceeds the quoted output. Must be paired with `positiveSlippageBps` (XOR — either both fields are set or both are omitted). See [Positive Slippage Capture](#positive-slippage-capture) |
 | `positiveSlippageBps` | Number | No | Positive-slippage capture rate in basis points (1 bps = 0.01%). Range `[0, 1000]` (i.e. ≤ 10%), and must be a multiple of `10` when greater than `0`. Must be paired with `positiveSlippageReceiverAddress`. See [Positive Slippage Capture](#positive-slippage-capture) |
+| `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount, replacing the value Pallas would otherwise derive from the quote. When set, it becomes the basis for the on-chain `min_out` (`min_out = expectAmountOut × (10000 − slippageBps) / 10000`) and for the response `tx.minReceiveAmount`; slippage is still applied once and `routerResult` still reflects the engine's quote. Must be `> 0` (passing `"0"` returns `INVALID_EXPECT_AMOUNT_OUT`). Omitted/`null` → behavior is unchanged (quote output is used). In cyclic-arbitrage mode it applies to the second leg only. |
 
 ---
 
@@ -108,7 +109,7 @@ See [API errors](api-errors) for the four `INVALID_POSITIVE_SLIPPAGE_*` validati
 |-------|------|-------------|
 | `from` | String | User's wallet address |
 | `to` | String | The contract address of OKX DEX router |
-| `minReceiveAmount` | String | The minimum amount of a token to buy when the price reaches the upper limit of slippage (e.g., `87084137`) |
+| `minReceiveAmount` | String | The minimum amount of a token to buy when the price reaches the upper limit of slippage (e.g., `87084137`). Derived from the quote output by default; when `expectAmountOut` is supplied, it is derived from that override instead (same slippage formula). |
 | `slippagePercent` | String | The value of current transaction slippage |
 
 ---

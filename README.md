@@ -10,6 +10,7 @@ Core capabilities:
 
 - Real-time on-chain AMM pool state via gRPC (Geyser) streaming + RPC polling
 - Local multi-hop optimal route computation and transaction building
+- [Cyclic arbitrage routing](docs/cyclic-arbitrage.md) — find the most profitable round-trip (same token in and out) across a set of intermediate tokens
 - HTTP API endpoints (`/swap`, `/swap-instruction`, etc.)
 - Prometheus monitoring metrics
 
@@ -135,6 +136,7 @@ The core business endpoints are `/swap` and `/swap-instruction`. For detailed re
 
 - [POST /swap](docs/api-swap.md) — Quote + transaction building (request parameters, response fields, examples)
 - [POST /swap-instruction](docs/api-swap-instruction.md) — Quote + decomposed instructions (assembly order, cycle arbitrage)
+- [Cyclic Arbitrage Mode](docs/cyclic-arbitrage.md) — round-trip routing: how `enableCyclicArbitrage` and `cyclicArbitrageIntermediateTokens` work, and sizing recommendations
 - [GET /program-id-to-label](docs/api-program-id-to-label.md) — DEX program ID to protocol name mapping
 - [POST /evict-pools](docs/api-evict-pools.md) — Runtime pool eviction
 - **[Error Code Reference](docs/api-errors.md)** — Unified error codes for all endpoints

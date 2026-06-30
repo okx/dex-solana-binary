@@ -86,6 +86,21 @@ Each parameter is evaluated independently. When set to `0`, auto-allocation foll
 | `BLOCKED_POOLS`        | Not set  | Startup pool denylist, comma-separated base58 pool addresses. Matched pools are excluded from all caches; invalid entries are skipped with a warning. Use `POST /evict-pools` to add at runtime |
 
 
+## Protocol-CU Table (Hub-hosted)
+
+Per-DEX compute-unit (CU) cost values used for `SetComputeUnitLimit` are fetched
+from the Hub (`GET /api/v1/dx/trade/pallas/protocol-cus`) once at startup and
+refreshed periodically by a background task, cached lock-free in an `ArcSwap`. A
+ship-with-binary baseline static table is always the fallback — if the Hub is
+unreachable, returns an invalid value, or omits a label, Pallas uses the baseline
+value (never `0`), so on-chain `ComputationalBudgetExceeded` does not increase.
+
+| Env Var                           | Default | Description                                                                                                                                                                 |
+| --------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PALLAS_PROTOCOL_CU_HUB_ENABLED`  | `true`  | Enable Hub-driven CU table. When disabled (`false`/`0`/`no`, case-insensitive), the startup fetch is skipped and the refresh task is not spawned — the baseline static table is used permanently. Emergency fallback switch, not a long-term mode |
+| `PALLAS_PROTOCOL_CU_REFRESH_SECS` | `300`   | Periodic refresh interval in seconds (a ±10% jitter is added; consecutive failures back off exponentially). `0` / invalid / unset falls back to `300` (a bad explicit value is logged with a warning) |
+
+
 ## Data Directory
 
 

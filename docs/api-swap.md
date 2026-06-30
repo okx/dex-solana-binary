@@ -29,6 +29,7 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `singleRouteOnly` | Boolean | No | Default is `false`. When enabled, routing is restricted to a single route. Multi-hop and multi-pool routes are allowed, but no parallel split routes will be constructed |
 | `singlePoolPerHop` | Boolean | No | Default is `false`. When enabled, each hop in the route is restricted to a single pool |
 | `stableIntermediateTokensOnly` | Boolean | No | Default is `false`. When enabled, routing will restrict intermediate tokens to stablecoins (e.g. USDC, USDT) to reduce high-slippage path risk |
+| `enableJit` | Boolean | No | Default is `false` (JIT post-processing **disabled**, opt-in). When `true`, enables JIT candidate-pool post-processing so `dexRouterList[].candidates` is populated and the candidate pools are translated into the built transaction. See [JIT Candidate Pools](#jit-candidate-pools) |
 | `enableCyclicArbitrage` | Boolean | No | Default is `false`. When enabled, enables cyclic arbitrage mode. `fromTokenAddress` and `toTokenAddress` must be the same, forming a circular route. See [Cyclic Arbitrage Mode](cyclic-arbitrage) |
 | `cyclicArbitrageIntermediateTokens` | String | No | Custom intermediate token mints, comma-separated. Only effective when `enableCyclicArbitrage` is `true`. See [Cyclic Arbitrage Mode](cyclic-arbitrage) for how these are used and sizing guidance |
 | `maxAccounts` | String | No | Provides an estimate of the maximum number of accounts that used for an instruction. It's useful when composing your own transaction, or if you want more precise resource accounting to optimize routing. Default: `64` |
@@ -70,6 +71,28 @@ See [API errors](api-errors) for the four `INVALID_POSITIVE_SLIPPAGE_*` validati
 
 ---
 
+## JIT Candidate Pools
+
+JIT post-processing is **off by default** and is enabled per request via `enableJit: true`. When enabled, Pallas attaches **alternative liquidity pools** to the quoted route as a purely additive hint. The quote and the selected route are never changed — this only fills the `dexRouterList[].candidates` field, so a downstream submitter can optionally substitute a Just-In-Time (JIT) liquidity pool for the chosen pool at execution time.
+
+**How it works** (runs after the route is assembled):
+
+1. The set of JIT-eligible DEX protocols is pushed by the OKX Hub and refreshed periodically (market-maker protocols such as Manifest, HumiDiFi, Tessera, GoonfiV2). If the Hub-pushed set is empty, JIT post-processing is disabled.
+2. Among the route hops whose pool belongs to a JIT-eligible protocol, the single hop carrying the largest share of total input flow is selected (ties resolved to the earliest hop). Flow share is the topological share of input routed through the hop — not the hop-local `percent`.
+3. That hop's token pair is re-quoted, excluding the already-selected pool and restricted to JIT-eligible protocols; the best-output alternative pool address is appended to that hop's `candidates`.
+
+**Guarantees**
+
+- Purely additive — `toTokenAmount`, the `dexRouterList` pools, and the `percent` values are never altered. Only `candidates` is populated.
+- At most one hop receives candidates per quote.
+- `candidates` is always present in the response. It is an empty array (`[]`) when JIT is not enabled (the default), no hop uses a JIT-eligible protocol, or no alternative pool quotes.
+
+**Enabling** — JIT post-processing is off by default; set the request parameter `enableJit: true` to turn it on. Without it every `candidates` stays `[]`.
+
+This feature also applies in [cyclic-arbitrage mode](cyclic-arbitrage).
+
+---
+
 ## Response
 
 | Field | Type | Description |
@@ -102,6 +125,7 @@ See [API errors](api-errors) for the four `INVALID_POSITIVE_SLIPPAGE_*` validati
 | `toTokenIndex` | String | Token index of toToken in the swap path |
 | `poolAddress` | String | On-chain address of the liquidity pool used in this step (base58) |
 | `percent` | String | The percentage of assets handled by the protocol (e.g., `60`) |
+| `candidates` | String[] | Alternative JIT-eligible pool addresses (base58) that may be substituted for `poolAddress` in this step. Always present; empty (`[]`) unless JIT post-processing attached a candidate to this hop. See [JIT Candidate Pools](#jit-candidate-pools) |
 
 ### TxMeta
 
@@ -147,7 +171,8 @@ curl -s -X POST 'http://localhost:8080/swap' \
         "fromTokenIndex": "0",
         "toTokenIndex": "1",
         "poolAddress": "8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj",
-        "percent": "60"
+        "percent": "60",
+        "candidates": ["ENhU8LsaR7vDD2G1CsWcsuSGNrih9Cv5WZEk7q9kPapQ"]
       },
       {
         "fromTokenAddress": "So11111111111111111111111111111111111111112",
@@ -155,7 +180,8 @@ curl -s -X POST 'http://localhost:8080/swap' \
         "fromTokenIndex": "0",
         "toTokenIndex": "2",
         "poolAddress": "4GkRbcYg1VKsZropgai4dMf2418GNJRF1QwNe54CsBD5",
-        "percent": "40"
+        "percent": "40",
+        "candidates": []
       },
       {
         "fromTokenAddress": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
@@ -163,7 +189,8 @@ curl -s -X POST 'http://localhost:8080/swap' \
         "fromTokenIndex": "2",
         "toTokenIndex": "1",
         "poolAddress": "EqnbDgR8e7K6h1xoLKaLLSBt4vDPiXApkDmTmFnRe14",
-        "percent": "100"
+        "percent": "100",
+        "candidates": []
       }
     ]
   },

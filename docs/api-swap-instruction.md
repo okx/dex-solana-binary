@@ -39,7 +39,7 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `computeUnitPrice` | String | No | Used for transactions on the Solana network and similar to gasPrice on Ethereum. This price determines the priority level of the transaction. The higher the price, the more likely that the transaction can be processed faster |
 | `computeUnitLimit` | String | No | Used for transactions on the Solana network and analogous to gasLimit on Ethereum, which ensures that the transaction won't take too much computing resource. If the parameter `tips` is not `0`, then `computeUnitLimit` should be set to `0`. Otherwise, the fee is wasted |
 | `tips` | String | No | Jito tips in lamports. This is used for MEV protection |
-| `useTokenLedger` | Boolean | No | Default is `false`. When `true`, uses token ledger for dynamic input amount detection |
+| `useTokenLedger` | Boolean | No | Default is `false`. When `true`, `swapInstruction` derives its input amount on-chain from the token-ledger delta instead of a fixed amount: insert your own deposit instruction(s) between `tokenLedgerInstruction` and `swapInstruction`, and the deposited amount becomes the swap input. Ignored when `enableCyclicArbitrage=true` (cyclic mode manages the token ledger itself) |
 | `positiveSlippageReceiverAddress` | String | No | Recipient address that captures the positive-slippage portion when the on-chain `actual_amount_out` exceeds the quoted output. Must be paired with `positiveSlippageBps` (XOR — either both fields are set or both are omitted). See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `positiveSlippageBps` | Number | No | Positive-slippage capture rate in basis points (1 bps = 0.01%). Range `[0, 1000]` (i.e. ≤ 10%), and must be a multiple of `10` when greater than `0`. Must be paired with `positiveSlippageReceiverAddress`. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount (the on-chain `min_out` basis). When set, the value is encoded into the `swapInstruction` bytes in place of the quote-derived output; slippage is still applied once on-chain. Must be `> 0` (passing `"0"` returns `INVALID_EXPECT_AMOUNT_OUT`); omitted/`null` leaves behavior unchanged. In cyclic-arbitrage mode it applies to the second leg (`otherInstructions[0]`) only. Note: this response has no `tx.minReceiveAmount` field, so the override is reflected only in the instruction bytes. |
@@ -51,7 +51,7 @@ Request parameters are identical to [`POST /swap`](api-swap).
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `tokenLedgerInstruction` | Instruction | Token ledger snapshot instruction (present when `useTokenLedger=true`) |
+| `tokenLedgerInstruction` | Instruction | Token ledger snapshot instruction. Present when `useTokenLedger=true` **or** `enableCyclicArbitrage=true`. With `useTokenLedger=true` it snapshots the source ATA and pairs with `swapInstruction`; in cyclic mode it snapshots the intermediate-token ATA and pairs with `otherInstructions[0]` (leg-2) |
 | `computeBudgetInstructions` | Instruction[] | Compute budget instructions (CU limit + priority fee) |
 | `setupInstructions` | Instruction[] | Token-account housekeeping ran **before** the swap (ATA creation + native-SOL wrap). Always non-empty. See [Setup & Cleanup Instructions](#setup--cleanup-instructions) |
 | `swapInstruction` | Instruction | Core swap instruction |
@@ -207,15 +207,22 @@ If routing finds no path (e.g. pool data not yet loaded), the endpoint returns H
 
 ## Transaction Assembly Order
 
-Assemble instructions into a Solana transaction in this order:
+Assemble instructions into a Solana transaction in this order (identical to what `POST /swap` builds internally):
 
-1. `tokenLedgerInstruction` (if present)
-2. `computeBudgetInstructions`
-3. `setupInstructions`
+1. `computeBudgetInstructions`
+2. `setupInstructions`
+3. `tokenLedgerInstruction` (if present)
 4. `swapInstruction`
-5. `cleanupInstruction` (if present)
-6. `otherInstructions`
+5. `otherInstructions`
+6. `cleanupInstruction` (if present)
 7. `tipInstruction` (if present)
+
+Two ordering rules are load-bearing:
+
+- `tokenLedgerInstruction` must run **after** `setupInstructions`: the ATA it snapshots (intermediate-token ATA in cyclic mode; source wSOL ATA for native-SOL input) may only be created by `setupInstructions`, and the snapshot fails on a non-existent account.
+- `cleanupInstruction` must run **after** `otherInstructions`: in SOL ⇆ SOL cyclic arbitrage, cleanup closes the user's wSOL ATA that leg-2 (`otherInstructions[0]`) still deposits into.
+
+With `useTokenLedger=true` (non-cyclic), insert your own deposit instruction(s) between 3 and 4 — the on-chain input amount is the balance delta since the snapshot.
 
 Use `addressLookupTableAddresses` to fetch ALTs for building a Versioned Transaction, then sign and submit.
 

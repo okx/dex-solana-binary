@@ -33,6 +33,8 @@ Both endpoints share parameter validation and routing logic; error codes are ide
 | 400  | `INVALID_POSITIVE_SLIPPAGE_BPS_PRECISION` | `positiveSlippageBps > 0` but not a multiple of `10` (contract `TRIM_DENOMINATOR = 1_000` only resolves 0.1% steps)  |
 | 400  | `INVALID_POSITIVE_SLIPPAGE_RECEIVER`  | `positiveSlippageReceiverAddress` is empty, invalid base58, or not 32 bytes after decoding                                |
 | 400  | `INVALID_EXPECT_AMOUNT_OUT`           | `expectAmountOut` is `"0"` (a zero override would disable on-chain slippage protection). Omitting the field or sending `null` is accepted. |
+| 400  | `INVALID_TIPS_RECEIVER`               | `tipsReceiver` is empty, invalid base58, or not 32 bytes after decoding. Validated before quoting; no fallback to a Jito account. Omitting the field is accepted; sending `null` is a parse error (422). |
+| 400  | `INVALID_TOKEN_LEDGER_MODE`           | **`/swap` only.** `useTokenLedger=true` without `enableCyclicArbitrage=true`. A self-contained `/swap` transaction has nothing funding the source token account after the ledger snapshot, so its on-chain input amount is always 0 and execution always fails (on-chain error 6011). Use `/swap-instructions` and insert your own deposit instruction(s) between `tokenLedgerInstruction` and `swapInstruction`. |
 
 
 ## Routing Errors

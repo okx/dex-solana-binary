@@ -2,12 +2,24 @@
 
 Cyclic arbitrage mode finds a profitable **round-trip** route — you send a token and receive the *same* token back, ending with more than you started with. It is enabled per request and is one of Pallas's headline routing capabilities.
 
-It is controlled by two `/swap` and `/swap-instruction` parameters:
+It is controlled by these `/swap` and `/swap-instruction` parameters:
 
 | Field | Description |
 |-------|-------------|
 | `enableCyclicArbitrage` | Set to `true` to enable the mode. `fromTokenAddress` and `toTokenAddress` must be the **same** mint, forming a circular route. |
 | `cyclicArbitrageIntermediateTokens` | Comma-separated mints to consider as the loop's intermediate stops. Only effective when `enableCyclicArbitrage` is `true`. |
+| `useTokenLedger` | Selects the **instruction shape** of the built transaction (does not affect routing). Defaults to `false`. See [Instruction shape](#instruction-shape) below. |
+
+### Instruction shape
+
+`useTokenLedger` chooses how the cycle is encoded into instructions when `enableCyclicArbitrage` is `true`:
+
+| `useTokenLedger` | Shape | Instructions |
+|------------------|-------|--------------|
+| `false` (default) | **Single whole-cycle instruction** | one `swap_tob` encoding the entire loop `A → … → A`; no `set_token_ledger`. Relies on the on-chain return-to-start normalization. |
+| `true` | **Two-leg split (A2A)** | `set_token_ledger` + leg-1 `swap_tob` + leg-2 `swap_tob_with_token_ledger`. The first hop runs with an explicit `amount_in`; the remaining hops derive `amount_in` on-chain from a ledger balance snapshot. |
+
+> **Default-behavior note (breaking change):** previously, `enableCyclicArbitrage=true` always produced the two-leg (A2A) shape. It now produces the **single whole-cycle instruction** by default. Pass `useTokenLedger=true` to keep the two-leg shape. The single-instruction shape requires the on-chain program to support return-to-start normalization.
 
 ---
 
@@ -120,7 +132,7 @@ If `cyclicArbitrageIntermediateTokens` is omitted, Pallas uses its own default i
 
 ## Related notes
 
-- The returned route is split across two instructions when building a transaction (leg-1 in `swapInstruction`, the remaining legs in `otherInstructions[0]`). For the slippage and transaction-assembly details, see [`POST /swap-instruction` → Cyclic-arbitrage slippage](api-swap-instruction#cyclic-arbitrage-slippage).
+- When building a transaction, the returned route's instruction shape depends on `useTokenLedger` (see [Instruction shape](#instruction-shape)): with the default `useTokenLedger=false` it is a **single** `swapInstruction` covering the whole loop (`tokenLedgerInstruction=null`, `otherInstructions=[]`); with `useTokenLedger=true` it is split into two legs (leg-1 in `swapInstruction`, leg-2 in `otherInstructions[0]`, plus `tokenLedgerInstruction`). For the slippage and transaction-assembly details, see [`POST /swap-instruction` → Cyclic-arbitrage slippage](api-swap-instruction#cyclic-arbitrage-slippage).
 - Parameter reference: [`POST /swap`](api-swap) and [`POST /swap-instruction`](api-swap-instruction).
 </content>
 </invoke>

@@ -101,6 +101,17 @@ value (never `0`), so on-chain `ComputationalBudgetExceeded` does not increase.
 | `PALLAS_PROTOCOL_CU_REFRESH_SECS` | `300`   | Periodic refresh interval in seconds (a ±10% jitter is added; consecutive failures back off exponentially). `0` / invalid / unset falls back to `300` (a bad explicit value is logged with a warning) |
 
 
+## JIT (DynamicRouteV1)
+
+JIT routing lets the on-chain router quote-and-pick among candidate pools at
+execution. The per-request `enableJit` opt-in gates it end-to-end; the env below
+is a machine-level circuit breaker independent of that request flag.
+
+| Env Var                          | Default        | Description                                                                                                                                                                 |
+| -------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PALLAS_DISABLE_JIT_TRANSLATION` | unset (enabled) | Machine-level JIT kill-switch. When set to `true`/`1` (trimmed, case-insensitive), the vtable drops all JIT payload (wave-1 + wave-2) and every route falls back to static single-pool encoding — an instant local fallback that does not wait for the Hub program-id registry refresh (~10 min). Any other value / unset leaves JIT enabled. Read once and cached (`OnceLock`), so a running process must be restarted for a change to take effect |
+
+
 ## Data Directory
 
 

@@ -26,7 +26,6 @@
 
 发布到 GitHub `okx/dex-solana-binary`，包含：
 - pallas-darwin-aarch64.zip
-- pallas-darwin-x86_64.zip
 - pallas-linux-x86_64.zip
 
 ## 异常处理

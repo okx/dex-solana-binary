@@ -12,7 +12,7 @@ release-to-github:
     - if: '$CI_COMMIT_TAG =~ /^v/'
   variables:
     GITHUB_REPO: "okx/dex-solana-binary"
-    EXPECTED_BINARIES: "pallas-darwin-aarch64 pallas-darwin-x86_64 pallas-linux-x86_64"
+    EXPECTED_BINARIES: "pallas-darwin-aarch64 pallas-linux-x86_64"
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl zip jq git > /dev/null 2>&1
   script:
@@ -30,8 +30,7 @@ release-to-github:
         echo "  Please create the release branch and push binaries first"
         exit 1
       fi
-      git --work-tree="${RELEASE_DIR}" checkout origin/release -- \
-        pallas-darwin-aarch64 pallas-darwin-x86_64 pallas-linux-x86_64
+      git --work-tree="${RELEASE_DIR}" checkout origin/release -- ${EXPECTED_BINARIES}
       # Fetch README.md (try common case variants)
       README_FETCHED=""
       for f in README.md readme.md Readme.md README.MD; do
@@ -56,7 +55,7 @@ release-to-github:
         echo "Error: Missing binary files on release branch:${MISSING}"
         exit 1
       fi
-      echo "  OK: 3 binary files found"
+      echo "  OK: $(echo ${EXPECTED_BINARIES} | wc -w) binary files found"
 
       # ── 2. Validate README.md ─────────────────────────────────────
       echo "==> Checking README.md..."

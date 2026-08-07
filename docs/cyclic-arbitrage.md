@@ -8,18 +8,28 @@ It is controlled by these `/swap` and `/swap-instruction` parameters:
 |-------|-------------|
 | `enableCyclicArbitrage` | Set to `true` to enable the mode. `fromTokenAddress` and `toTokenAddress` must be the **same** mint, forming a circular route. |
 | `cyclicArbitrageIntermediateTokens` | Comma-separated mints to consider as the loop's intermediate stops. Only effective when `enableCyclicArbitrage` is `true`. |
-| `useTokenLedger` | Selects the **instruction shape** of the built transaction (does not affect routing). Defaults to `false`. See [Instruction shape](#instruction-shape) below. |
+| `uniqueDexIds` | Optional comma-separated DEX program IDs. Each listed protocol may be used by at most one hop in the entire loop. A non-empty request value replaces the Hub-pushed default list. |
+| `enableUniqueDex` | Enables the per-protocol uniqueness constraint. Default is `true`; set it to `false` to ignore both the request list and the Hub list. |
+| `executionMode` | Selects the **instruction shape** of the built transaction (does not affect routing). One of `singleTx` (default) / `tokenLedger` / `maxIn`. Defaults to `singleTx`. See [Instruction shape](#instruction-shape) below. |
 
 ### Instruction shape
 
-`useTokenLedger` chooses how the cycle is encoded into instructions when `enableCyclicArbitrage` is `true`:
+`executionMode` chooses how the cycle is encoded into instructions when `enableCyclicArbitrage` is `true`:
 
-| `useTokenLedger` | Shape | Instructions |
-|------------------|-------|--------------|
-| `false` (default) | **Single whole-cycle instruction** | one `swap_tob` encoding the entire loop `A → … → A`; no `set_token_ledger`. Relies on the on-chain return-to-start normalization. |
-| `true` | **Two-leg split (A2A)** | `set_token_ledger` + leg-1 `swap_tob` + leg-2 `swap_tob_with_token_ledger`. The first hop runs with an explicit `amount_in`; the remaining hops derive `amount_in` on-chain from a ledger balance snapshot. |
+| `executionMode` | Shape | Instructions |
+|------------|-------|--------------|
+| `singleTx` (default) | **Single whole-cycle instruction** | one `swap_tob_v3` encoding the entire loop `A → … → A`; no `set_token_ledger`. Relies on the on-chain return-to-start normalization. |
+| `tokenLedger` | **Three-instruction split (A2A, literal ledger)** | `set_token_ledger` (snapshots the intermediate token's ATA — MUST precede leg-1, since the contract derives leg-2's `amount_in` as `current_balance − snapshot`) + leg-1 `swap_tob_v3` (explicit `amount_in`, deposits into the intermediate ATA) + leg-2 `swap_tob_with_token_ledger_v3` (`amount_in` derived on-chain from the ledger balance delta). |
+| `maxIn` | **Two-instruction split (A2A, Swap-Max)** | leg-1 `swap_tob_v3` + leg-2 `swap_tob_v3` (contract v3, Swap-Max). The first hop runs with an explicit `amount_in`; the remaining hops encode `amount_in` as a sentinel upper bound, resolved on-chain to `min(amount_in, balance) == balance` — no `set_token_ledger` snapshot instruction. |
 
-> **Default-behavior note (breaking change):** previously, `enableCyclicArbitrage=true` always produced the two-leg (A2A) shape. It now produces the **single whole-cycle instruction** by default. Pass `useTokenLedger=true` to keep the two-leg shape. The single-instruction shape requires the on-chain program to support return-to-start normalization.
+Neither `executionMode=tokenLedger` nor `executionMode=maxIn` **requires** `enableCyclicArbitrage=true` — both also have a standalone (non-cyclic) shape, and in both cases that standalone shape is supported **only** on `/swap-instruction` (rejected on `/swap`, since a self-contained transaction has nothing funding the source/intermediate token account before the swap executes, so it could never succeed):
+
+- `executionMode=tokenLedger` without a cycle: the two-instruction standalone shape (`tokenLedgerInstruction` + `swapInstruction`) — the caller inserts a deposit instruction between them, and the deposited amount becomes the swap input. `/swap` rejects this combination with `INVALID_TOKEN_LEDGER_MODE`. See [`POST /swap-instruction`](api-swap-instruction).
+- `executionMode=maxIn` without a cycle: a single-instruction standalone shape — one `swap_tob_v3` in Swap-Max mode as `swapInstruction` (sentinel `amount_in`, `tokenLedgerInstruction=null`, `otherInstructions=[]`) — the caller inserts their own funding instruction(s) before `swapInstruction`. `/swap` rejects this combination with `INVALID_SWAP_MODE`. See [`POST /swap-instruction`](api-swap-instruction).
+
+With a cycle (`enableCyclicArbitrage=true`), both instead produce the A2A splits described in the table above.
+
+> **Default-behavior note (breaking change):** this supersedes the earlier `useTokenLedger: bool` field entirely (removed from the wire format). Historically, `enableCyclicArbitrage=true` always produced the two-leg (A2A) shape; it now produces the **single whole-cycle instruction** by default. Pass `executionMode=maxIn` to get the two-leg Swap-Max split, or `executionMode=tokenLedger` for the three-instruction literal-ledger split. The single-instruction shape requires the on-chain program to support return-to-start normalization.
 
 ---
 
@@ -36,6 +46,27 @@ Given a start token (say SOL) and a set of intermediate tokens, Pallas looks for
 ```
 
 The quote returns the best loop it can build over the given tokens. Note that "best" does **not** guarantee "profitable" — when no real arbitrage exists, you still get a route back, just one whose output is at or below the input. Always compare the returned `toTokenAmount` against your input `amount` before acting on it.
+
+---
+
+## Per-protocol uniqueness
+
+Pallas can prevent selected DEX protocols from appearing more than once in the same loop. This protects cycles whose two legs would otherwise use different pools backed by the same protocol state. For example, if Manifest is in the effective list, `SOL → Manifest pool A → USDC → Manifest pool B → SOL` is rejected, while a loop containing one Manifest hop remains eligible.
+
+The effective list is resolved in this order:
+
+| Request state | Effective behavior |
+|---------------|--------------------|
+| `enableUniqueDex=false` | Constraint disabled; both request and Hub lists are ignored. |
+| Non-empty `uniqueDexIds` | The request list replaces the Hub list; the two lists are not merged. |
+| `uniqueDexIds` omitted or empty | The independently managed Hub list is used. |
+| Hub list empty or not yet fetched | Constraint disabled until a non-empty list is available. |
+
+The rule is applied while searching, so Pallas can return the best legal alternative rather than first choosing an illegal route and discarding it afterward. Protocols outside the effective list may still appear more than once. `dexIds` and `excludedDexIds` remain separate allow/deny filters: they decide whether a DEX can be used at all, while `uniqueDexIds` only limits repetition.
+
+All IDs must be valid base58-encoded 32-byte program IDs. Validation happens before `enableUniqueDex` is applied, so an invalid `uniqueDexIds` value still returns `INVALID_DEX_ID` when the switch is `false`. In non-cyclic mode both fields have no routing effect.
+
+When `enableJit=true`, the same rule also filters JIT alternatives: a candidate cannot introduce a second use of a managed protocol on another hop, but replacing the target hop with another pool from its own protocol remains allowed.
 
 ---
 
@@ -71,6 +102,7 @@ Cyclic arbitrage reuses the standard `/swap` request, but not every routing para
 |-----------|------------------------|
 | `cyclicArbitrageIntermediateTokens` | The candidate token set the loop is searched over (your start token is always included automatically). |
 | `dexIds` / `excludedDexIds` | Restrict which DEXes the loop may use. Only pools on the allowed DEXes are visible to the search, so these can change or eliminate the winning loop. |
+| `uniqueDexIds` / `enableUniqueDex` | Control whether selected protocols may appear more than once in the loop. See [Per-protocol uniqueness](#per-protocol-uniqueness). |
 | `maxAccounts` | Bounds the total accounts the route may touch. Longer loops cost more accounts, so a tighter limit pushes toward shorter loops (and can rule out an otherwise-better long loop). Cyclic mode reserves slightly more header accounts than a normal swap, so the usable budget is a little smaller than the raw number suggests. |
 
 **Shape the resulting transaction (not the search):**
@@ -132,7 +164,7 @@ If `cyclicArbitrageIntermediateTokens` is omitted, Pallas uses its own default i
 
 ## Related notes
 
-- When building a transaction, the returned route's instruction shape depends on `useTokenLedger` (see [Instruction shape](#instruction-shape)): with the default `useTokenLedger=false` it is a **single** `swapInstruction` covering the whole loop (`tokenLedgerInstruction=null`, `otherInstructions=[]`); with `useTokenLedger=true` it is split into two legs (leg-1 in `swapInstruction`, leg-2 in `otherInstructions[0]`, plus `tokenLedgerInstruction`). For the slippage and transaction-assembly details, see [`POST /swap-instruction` → Cyclic-arbitrage slippage](api-swap-instruction#cyclic-arbitrage-slippage).
+- When building a transaction, the returned route's instruction shape depends on `executionMode` (see [Instruction shape](#instruction-shape)): with the default `executionMode=singleTx` it is a **single** `swapInstruction` covering the whole loop (`tokenLedgerInstruction=null`, `otherInstructions=[]`); with `executionMode=maxIn` it is split into two legs (leg-1 in `swapInstruction`, leg-2 `swap_tob_v3` Swap-Max in `otherInstructions[0]`; `tokenLedgerInstruction` is always `null`); with `executionMode=tokenLedger` it is split into two legs plus a literal ledger snapshot (leg-1 in `swapInstruction`, `tokenLedgerInstruction` populated with `set_token_ledger`, leg-2 `swap_tob_with_token_ledger_v3` in `otherInstructions[0]`). For the slippage and transaction-assembly details, see [`POST /swap-instruction` → Cyclic-arbitrage slippage](api-swap-instruction#cyclic-arbitrage-slippage).
 - Parameter reference: [`POST /swap`](api-swap) and [`POST /swap-instruction`](api-swap-instruction).
 </content>
 </invoke>

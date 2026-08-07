@@ -27,6 +27,8 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `userWalletAddress` | String | Yes | User's wallet address (e.g., `J5CBzXpcYn6WR2JBah8zU4Yxct985CAFGwXRcFaX2pbS`) |
 | `dexIds` | String | No | DexId of the liquidity pool for limited quotes, multiple combinations separated by `,`. Use `/program-id-to-label` to look up IDs |
 | `excludedDexIds` | String | No | The dexId of the liquidity pool that will not be used, multiple combinations separated by `,` |
+| `uniqueDexIds` | String | No | Comma-separated DEX program IDs that may each appear at most once in a cyclic-arbitrage route. By default (omitted or empty), Pallas uses the Hub-pushed proAMM list; a non-empty value replaces that complete list for this request. The listed DEXes remain eligible for routing—this is not a denylist. Only effective when `enableCyclicArbitrage=true` |
+| `enableUniqueDex` | Boolean | No | Default is `true`. When `false`, disables the per-protocol uniqueness constraint for this request and ignores both `uniqueDexIds` and the Hub list. `uniqueDexIds` is still validated first, so a malformed ID returns `INVALID_DEX_ID` even when this switch is disabled |
 | `directRoute` | Boolean | No | Default is `false`. When enabled, restricts routing to a single liquidity pool only |
 | `singleRouteOnly` | Boolean | No | Default is `false`. When enabled, routing is restricted to a single route. Multi-hop and multi-pool routes are allowed, but no parallel split routes will be constructed |
 | `singlePoolPerHop` | Boolean | No | Default is `false`. When enabled, each hop in the route is restricted to a single pool |
@@ -40,7 +42,7 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `computeUnitLimit` | String | No | Used for transactions on the Solana network and analogous to gasLimit on Ethereum, which ensures that the transaction won't take too much computing resource. If the parameter `tips` is not `0`, then `computeUnitLimit` should be set to `0`. Otherwise, the fee is wasted |
 | `tips` | String | No | Jito tips in lamports. This is used for MEV protection |
 | `tipsReceiver` | String | No | Custom destination (base58 32-byte Solana address) for the tip transfer. When set and valid, the `tipInstruction` targets this address instead of a random Jito tip account, and the custom path has **no** `MIN_TIP_LAMPORTS` gate — the tip is emitted for any `tips > 0`. When omitted, Jito behavior is unchanged (random account, `tips > 1000` gate). No pairing constraint with `tips`. Empty / invalid base58 / non-32-byte → `INVALID_TIPS_RECEIVER` (validated before quoting). |
-| `useTokenLedger` | Boolean | No | Default is `false`. When `true` (non-cyclic), `swapInstruction` derives its input amount on-chain from the token-ledger delta instead of a fixed amount: insert your own deposit instruction(s) between `tokenLedgerInstruction` and `swapInstruction`, and the deposited amount becomes the swap input. This standalone shape is supported **only** on this endpoint (`/swap` rejects it with `INVALID_TOKEN_LEDGER_MODE`, since a self-contained transaction has no deposit and its input amount would always be 0). With `enableCyclicArbitrage=true` it instead selects the cyclic instruction shape: `true` → two-leg A2A split, `false` → single whole-cycle instruction |
+| `executionMode` | String | No | Default is `singleTx`. `tokenLedger` (non-cyclic, `enableCyclicArbitrage=false`): `swapInstruction` derives its input amount on-chain from the token-ledger delta instead of a fixed amount — insert your own deposit instruction(s) between `tokenLedgerInstruction` and `swapInstruction`, and the deposited amount becomes the swap input. This standalone shape is supported **only** on this endpoint (`/swap` rejects it with `INVALID_TOKEN_LEDGER_MODE`, since a self-contained transaction has no deposit and its input amount would always be 0). `maxIn` (non-cyclic, `enableCyclicArbitrage=false`) is a composition primitive with the same endpoint restriction: `swapInstruction` is a single `swap_tob_v3` encoded in Swap-Max mode (`amount_in` = sentinel `u64::MAX`, resolved on-chain to the full source-ATA balance at execution time), `tokenLedgerInstruction` is `null`, and `otherInstructions` is empty — insert your own funding instruction(s) (a deposit, a preceding swap's output landing in that ATA, etc.) before `swapInstruction` in your own transaction. This shape is also supported **only** on this endpoint (`/swap` rejects it with `INVALID_SWAP_MODE`, since a self-contained transaction has no instruction funding the source token account before the Swap-Max sweep). With `enableCyclicArbitrage=true`, `executionMode` instead selects the cyclic instruction shape: `singleTx` (default) → single whole-cycle instruction, `tokenLedger` → three-instruction A2A split reusing the literal ledger mechanism, `maxIn` → two-instruction A2A split using an on-chain Swap-Max sentinel instead of a ledger snapshot |
 | `positiveSlippageReceiverAddress` | String | No | Recipient address that captures the positive-slippage portion when the on-chain `actual_amount_out` exceeds the quoted output. Must be paired with `positiveSlippageBps` (XOR — either both fields are set or both are omitted). See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `positiveSlippageBps` | Number | No | Positive-slippage capture rate in basis points (1 bps = 0.01%). Range `[0, 1000]` (i.e. ≤ 10%), and must be a multiple of `10` when greater than `0`. Must be paired with `positiveSlippageReceiverAddress`. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount (the on-chain `min_out` basis). When set, the value is encoded into the `swapInstruction` bytes in place of the quote-derived output; slippage is still applied once on-chain. Must be `> 0` (passing `"0"` returns `INVALID_EXPECT_AMOUNT_OUT`); omitted/`null` leaves behavior unchanged. In cyclic-arbitrage mode it applies to the second leg (`otherInstructions[0]`) only. Note: this response has no `tx.minReceiveAmount` field, so the override is reflected only in the instruction bytes. |
@@ -52,7 +54,7 @@ Request parameters are identical to [`POST /swap`](api-swap).
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `tokenLedgerInstruction` | Instruction | Token ledger snapshot instruction. Present when `useTokenLedger=true` **or** `enableCyclicArbitrage=true`. With `useTokenLedger=true` it snapshots the source ATA and pairs with `swapInstruction`; in cyclic mode it snapshots the intermediate-token ATA and pairs with `otherInstructions[0]` (leg-2) |
+| `tokenLedgerInstruction` | Instruction | Token ledger snapshot instruction. Present for `executionMode=tokenLedger` in either mode: non-cyclic (`enableCyclicArbitrage=false`), where it snapshots the source ATA and pairs with `swapInstruction`; or cyclic A2A (`enableCyclicArbitrage=true`), where it snapshots the intermediate-token ATA that leg-1 (`swapInstruction`) is about to deposit into. In assembly order it runs **before** `swapInstruction` (leg-1), not between leg-1 and leg-2 (`otherInstructions[0]`, `swap_tob_with_token_ledger_v3`) — the snapshot must precede the deposit, since the contract derives leg-2's `amount_in` as `current_balance − snapshot`. For `executionMode=maxIn` (standalone non-cyclic or cyclic A2A), this field is always `null` — the standalone shape has no ledger snapshot at all (`swapInstruction` alone is the Swap-Max composition primitive), and in cyclic A2A, Leg2 (`otherInstructions[0]`) uses contract v3 `swap_tob_v3` (Swap-Max) instead of a ledger snapshot |
 | `computeBudgetInstructions` | Instruction[] | Compute budget instructions: `[SetComputeUnitLimit, SetComputeUnitPrice]`. When the route spans **4 or more pools** (JIT candidate pools counted individually), a `RequestHeapFrame` is inserted between them — `[SetComputeUnitLimit, RequestHeapFrame, SetComputeUnitPrice]` — to grow the on-chain heap (64KB–256KB, scaling with pool count) and avoid heap overflow |
 | `setupInstructions` | Instruction[] | Token-account housekeeping ran **before** the swap (ATA creation + native-SOL wrap). Always non-empty. See [Setup & Cleanup Instructions](#setup--cleanup-instructions) |
 | `swapInstruction` | Instruction | Core swap instruction |
@@ -102,7 +104,7 @@ The `setupInstructions` and `cleanupInstruction` fields handle Solana-specific t
 | # | Segment | Count | When it appears |
 |---|---|---|---|
 | 1 | `createDestinationATA` | always 1 | **Always.** Uses the SPL `CreateIdempotent` variant, so it is a chain-side no-op when the user already owns the destination ATA. For Token-2022 destination mints, this instruction automatically targets the Token-2022 program. |
-| 2 | `createUserIntermediateATA` | 0 or 1 | Only when `enableCyclicArbitrage = true`. Pre-creates the user's intermediate-token ATA so the cyclic-arbitrage `set_token_ledger` step has a valid target. |
+| 2 | `createUserIntermediateATA` | 0 or 1 | Only when `enableCyclicArbitrage = true && executionMode != singleTx` — either `executionMode = maxIn` (two-instruction A2A split) or `executionMode = tokenLedger` (three-instruction A2A split with a literal ledger snapshot). Pre-creates the user's own intermediate-token ATA, which leg-1 (`swap_tob_v3`) writes to and leg-2 (`swap_tob_v3` Swap-Max, or `swap_tob_with_token_ledger_v3`) reads from as the two separate top-level instructions hand off the intermediate token. Not emitted for `executionMode = singleTx` (default, single whole-cycle `swap_tob_v3` instruction — no user-owned intermediate ATA hand-off needed). |
 | 3 | `createIntermediateSaATA[…]` | 0 or more | Only when the route has ≥ 2 hops **and** an intermediate mint is not in the server's base-token whitelist (SOL / USDC / USDT / …). These create the router service-account (SA) ATAs that hold balances between hops. |
 | 4 | wSOL **wrap triplet**: `wrapSolCreateATA` + `systemTransfer` + `syncNative` | always 3 (as a unit) | Only when `fromTokenAddress` is native SOL (`11111…1`). The three instructions are always emitted together. |
 
@@ -115,7 +117,7 @@ Governed by **one rule**:
 | native SOL (`11111…1`) | SPL Token `CloseAccount` on the user's destination wSOL ATA → underlying lamports (rent + token balance) return to the wallet as native SOL |
 | any SPL mint (including the wSOL literal `So11…2`) | `null` |
 
-It does **not** depend on `useTokenLedger`, `enableCyclicArbitrage`, route length, or whether the destination ATA was newly created.
+It does **not** depend on `executionMode`, `enableCyclicArbitrage`, route length, or whether the destination ATA was newly created.
 
 ### Examples
 
@@ -167,13 +169,13 @@ If `X` were USDC (on the base-token whitelist), the matching entry would be skip
 ```
 setupInstructions = [
   createDestATA(A),                                  // dest = source = A, still emitted (idempotent)
-  createUserIntermediateATA(B),                      // for set_token_ledger
+  createUserIntermediateATA(B),                      // leg-2's source_token_account (swap_tob_v3 Swap-Max, or swap_tob_with_token_ledger_v3)
   createIntermediateSaATA(B),                        // if B is off the whitelist
 ]                                                     // length 3 (or 2 if B is whitelisted)
 cleanupInstruction = null
 ```
 
-Note: the cyclic route is split between two ix — `swapInstruction` carries leg-1 (A → B), `otherInstructions[0]` carries leg-2 (B → A). See [Cyclic-arbitrage slippage](#cyclic-arbitrage-slippage).
+Note: the cyclic route is split between two ix — `swapInstruction` carries leg-1 (A → B), `otherInstructions[0]` carries leg-2 (B → A). With `executionMode=tokenLedger`, `tokenLedgerInstruction` is additionally populated with a literal `set_token_ledger` snapshot (instead of the Swap-Max sentinel used by `executionMode=maxIn`) — per the assembly order below, it runs **before** `swapInstruction` (leg-1), not between the two legs: the contract derives leg-2's `amount_in` as `current_balance − snapshot`, so the snapshot must be taken before leg-1 deposits into the intermediate ATA. See [Cyclic-arbitrage slippage](#cyclic-arbitrage-slippage).
 
 #### 6. Cyclic arbitrage, native SOL ⇆ native SOL (SOL → B → SOL)
 
@@ -193,10 +195,11 @@ The duplicate wSOL ATA reference (`createDestATA` + `wrapCreateATA`) is by desig
 
 ### Cyclic-arbitrage slippage
 
-When `enableCyclicArbitrage = true`, the route is split into two router instructions:
+When `enableCyclicArbitrage = true` and `executionMode` is `maxIn` or `tokenLedger`, the route is split into two router instructions (plus, for `tokenLedger`, a `set_token_ledger` snapshot in between):
 
-- **leg-1** lives in `swapInstruction`. Its on-chain `min_out` is hard-coded to `1` (the user-supplied slippage does not apply to the intermediate token, and on-chain rejects `min_out = 0`).
-- **leg-2…N** lives in `otherInstructions[0]`. Its on-chain `min_out` equals the quoted final output of the loop token (or `expectAmountOut`, when supplied), with the user-supplied `slippagePercent` rounded to bps. This is the lower bound the user actually cares about.
+- **leg-1** lives in `swapInstruction`. Its on-chain `min_out` is hard-coded to `1` (the user-supplied slippage does not apply to the intermediate token, and on-chain rejects `min_out = 0`). Identical for `maxIn` and `tokenLedger`.
+- **leg-2…N** lives in `otherInstructions[0]`. Its on-chain `min_out` equals the quoted final output of the loop token (or `expectAmountOut`, when supplied), with the user-supplied `slippagePercent` rounded to bps. This is the lower bound the user actually cares about. With `executionMode=maxIn` this is `swap_tob_v3` (Swap-Max sentinel `amount_in`); with `executionMode=tokenLedger` this is `swap_tob_with_token_ledger_v3` (`amount_in` derived from the ledger delta) — the `min_out` semantics are identical between the two.
+- With `executionMode=singleTx` (default), the whole cycle is a single instruction in `swapInstruction`, `otherInstructions` is empty, and this split does not apply.
 
 `tx.minReceiveAmount` (in `routerResult`) reflects the leg-2 bound.
 
@@ -223,7 +226,7 @@ Two ordering rules are load-bearing:
 - `tokenLedgerInstruction` must run **after** `setupInstructions`: the ATA it snapshots (intermediate-token ATA in cyclic mode; source wSOL ATA for native-SOL input) may only be created by `setupInstructions`, and the snapshot fails on a non-existent account.
 - `cleanupInstruction` must run **after** `otherInstructions`: in SOL ⇆ SOL cyclic arbitrage, cleanup closes the user's wSOL ATA that leg-2 (`otherInstructions[0]`) still deposits into.
 
-With `useTokenLedger=true` (non-cyclic), insert your own deposit instruction(s) between 3 and 4 — the on-chain input amount is the balance delta since the snapshot.
+With `executionMode=tokenLedger` (non-cyclic), insert your own deposit instruction(s) between 3 and 4 — the on-chain input amount is the balance delta since the snapshot. With `executionMode=maxIn` (non-cyclic), `tokenLedgerInstruction` is `null` (no step 3), so insert your own funding instruction(s) directly before 4 (`swapInstruction`) — the swap resolves its input as the full source-ATA balance at execution time.
 
 Use `addressLookupTableAddresses` to fetch ALTs for building a Versioned Transaction, then sign and submit.
 

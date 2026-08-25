@@ -25,13 +25,14 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `userWalletAddress` | String | Yes | User's wallet address (e.g., `J5CBzXpcYn6WR2JBah8zU4Yxct985CAFGwXRcFaX2pbS`) |
 | `dexIds` | String | No | DexId of the liquidity pool for limited quotes, multiple combinations separated by `,`. Use `/program-id-to-label` to look up IDs |
 | `excludedDexIds` | String | No | The dexId of the liquidity pool that will not be used, multiple combinations separated by `,` |
+| `allowedPools` | String[] | No | Request-level pool allowlist. Each item must be a valid base58 Solana address; duplicates are deduplicated and there is no list-size limit. Omitted or `null` applies no request-level pool filter, while `[]` allows no pools and returns `NO_ROUTES_FOUND`. Pallas intersects this list with the pools loaded by the server-level `ALLOWED_POOLS` configuration, then runs normal routing, including multi-hop, split, cyclic-arbitrage, and JIT behavior, only within that intersection. Unknown or unloaded addresses are ignored by the intersection and do not return `MARKET_NOT_FOUND` |
 | `uniqueDexIds` | String | No | Comma-separated DEX program IDs that may each appear at most once in a cyclic-arbitrage route. By default (omitted or empty), Pallas uses the Hub-pushed proAMM list; a non-empty value replaces that complete list for this request. The listed DEXes remain eligible for routing—this is not a denylist. Only effective when `enableCyclicArbitrage=true` |
 | `enableUniqueDex` | Boolean | No | Default is `true`. When `false`, disables the per-protocol uniqueness constraint for this request and ignores both `uniqueDexIds` and the Hub list. `uniqueDexIds` is still validated first, so a malformed ID returns `INVALID_DEX_ID` even when this switch is disabled |
 | `directRoute` | Boolean | No | Default is `false`. When enabled, restricts routing to a single liquidity pool only |
 | `singleRouteOnly` | Boolean | No | Default is `false`. When enabled, routing is restricted to a single route. Multi-hop and multi-pool routes are allowed, but no parallel split routes will be constructed |
 | `singlePoolPerHop` | Boolean | No | Default is `false`. When enabled, each hop in the route is restricted to a single pool |
 | `stableIntermediateTokensOnly` | Boolean | No | Default is `false`. When enabled, routing will restrict intermediate tokens to stablecoins (e.g. USDC, USDT) to reduce high-slippage path risk |
-| `enableJit` | Boolean | No | Default is `false` (JIT post-processing **disabled**, opt-in). When `true`, enables JIT candidate-pool post-processing so `dexRouterList[].candidates` is populated and the candidate pools are translated into the built transaction. See [JIT Candidate Pools](#jit-candidate-pools) |
+| `enableJit` | Boolean | No | Default is `true`. JIT candidate-pool post-processing and transaction translation are enabled when omitted; set `false` to disable them for the request. See [JIT Candidate Pools](#jit-candidate-pools) |
 | `enableCyclicArbitrage` | Boolean | No | Default is `false`. When enabled, enables cyclic arbitrage mode. `fromTokenAddress` and `toTokenAddress` must be the same, forming a circular route. See [Cyclic Arbitrage Mode](cyclic-arbitrage) |
 | `cyclicArbitrageIntermediateTokens` | String | No | Custom intermediate token mints, comma-separated. Only effective when `enableCyclicArbitrage` is `true`. See [Cyclic Arbitrage Mode](cyclic-arbitrage) for how these are used and sizing guidance |
 | `maxAccounts` | String | No | Provides an estimate of the maximum number of accounts that used for an instruction. It's useful when composing your own transaction, or if you want more precise resource accounting to optimize routing. Default: `64` |
@@ -76,22 +77,23 @@ See [API errors](api-errors) for the four `INVALID_POSITIVE_SLIPPAGE_*` validati
 
 ## JIT Candidate Pools
 
-JIT post-processing is **off by default** and is enabled per request via `enableJit: true`. When enabled, Pallas attaches **alternative liquidity pools** to the quoted route as a purely additive hint. The quote and the selected route are never changed — this only fills the `dexRouterList[].candidates` field, so a downstream submitter can optionally substitute a Just-In-Time (JIT) liquidity pool for the chosen pool at execution time.
+JIT post-processing is **on by default**. Pallas attaches **alternative liquidity pools** to the quoted route as a purely additive hint unless the caller explicitly sends `enableJit: false`. The quote and the selected route are never changed — this only fills the `dexRouterList[].candidates` field, so a downstream submitter can optionally substitute a Just-In-Time (JIT) liquidity pool for the chosen pool at execution time.
 
 **How it works** (runs after the route is assembled):
 
 1. The set of JIT-eligible DEX protocols is pushed by the OKX Hub and refreshed periodically (market-maker protocols such as Manifest, HumiDiFi, Tessera, GoonfiV2). If the Hub-pushed set is empty, JIT post-processing is disabled.
-2. Among the route hops whose pool belongs to a JIT-eligible protocol, the single hop carrying the largest share of total input flow is selected (ties resolved to the earliest hop). Flow share is the topological share of input routed through the hop — not the hop-local `percent`.
-3. That hop's token pair is re-quoted, excluding the already-selected pool and restricted to JIT-eligible protocols; the best-output alternative pool address is appended to that hop's `candidates`.
+2. For normal swaps, the single eligible hop carrying the largest share of total input flow is selected (ties resolved to the earliest hop). For cyclic arbitrage, every eligible leg is considered in route order.
+3. Each considered pair is re-quoted after request, route-pool, and effective unique-DEX filters. At most one valid alternate is selected for each considered pair.
 
 **Guarantees**
 
 - Purely additive — `toTokenAmount`, the `dexRouterList` pools, and the `percent` values are never altered. Only `candidates` is populated.
-- At most one hop receives candidates per quote.
+- Each leg receives at most one alternate. Normal swaps still populate at most one hop; cyclic arbitrage tries to populate every eligible leg.
 - In cyclic mode, a JIT candidate cannot introduce a second use of a protocol listed in the effective `uniqueDexIds` set. Replacing the target hop with another pool from that hop's own protocol remains allowed.
-- `candidates` is always present in the response. It is an empty array (`[]`) when JIT is not enabled (the default), no hop uses a JIT-eligible protocol, or no alternative pool quotes.
+- `candidates` is always present in the response. It is an empty array (`[]`) when JIT is explicitly disabled, no hop uses a JIT-eligible protocol, or no alternative pool quotes.
+- For complete cyclic `/swap` transactions, a serialized size above 1232 bytes triggers bounded fallback: Pallas removes the earliest leg's alternate and fully rebuilds until the transaction fits. If all alternates are removed and it is still oversized, `TRANSACTION_TOO_LARGE` is returned. `/swap-instruction` cannot apply this final-transaction-size fallback.
 
-**Enabling** — JIT post-processing is off by default; set the request parameter `enableJit: true` to turn it on. Without it every `candidates` stays `[]`.
+**Opting out** — JIT post-processing is on by default. Set `enableJit: false` to disable it for a request; explicit `true` is equivalent to omitting the field.
 
 This feature also applies in [cyclic-arbitrage mode](cyclic-arbitrage).
 
@@ -128,6 +130,7 @@ This feature also applies in [cyclic-arbitrage mode](cyclic-arbitrage).
 | `fromTokenIndex` | String | Token index of fromToken in the swap path |
 | `toTokenIndex` | String | Token index of toToken in the swap path |
 | `poolAddress` | String | On-chain address of the liquidity pool used in this step (base58) |
+| `dexName` | String | DEX protocol name corresponding to `poolAddress` |
 | `percent` | String | The percentage of assets handled by the protocol (e.g., `60`) |
 | `candidates` | String[] | Alternative JIT-eligible pool addresses (base58) that may be substituted for `poolAddress` in this step. Always present; empty (`[]`) unless JIT post-processing attached a candidate to this hop. See [JIT Candidate Pools](#jit-candidate-pools) |
 
@@ -175,6 +178,7 @@ curl -s -X POST 'http://localhost:8080/swap' \
         "fromTokenIndex": "0",
         "toTokenIndex": "1",
         "poolAddress": "8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj",
+        "dexName": "RaydiumClmm",
         "percent": "60",
         "candidates": ["ENhU8LsaR7vDD2G1CsWcsuSGNrih9Cv5WZEk7q9kPapQ"]
       },
@@ -184,6 +188,7 @@ curl -s -X POST 'http://localhost:8080/swap' \
         "fromTokenIndex": "0",
         "toTokenIndex": "2",
         "poolAddress": "4GkRbcYg1VKsZropgai4dMf2418GNJRF1QwNe54CsBD5",
+        "dexName": "OrcaWhirlpool",
         "percent": "40",
         "candidates": []
       },
@@ -193,6 +198,7 @@ curl -s -X POST 'http://localhost:8080/swap' \
         "fromTokenIndex": "2",
         "toTokenIndex": "1",
         "poolAddress": "EqnbDgR8e7K6h1xoLKaLLSBt4vDPiXApkDmTmFnRe14",
+        "dexName": "MeteoraDlmm",
         "percent": "100",
         "candidates": []
       }

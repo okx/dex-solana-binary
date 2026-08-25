@@ -80,6 +80,7 @@ Each parameter is evaluated independently. When set to `0`, auto-allocation foll
 
 | Env Var                | Default  | Description                                                                                                                                                                                     |
 | ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ALLOWED_POOLS`        | Not set  | Comma-separated base58 pool addresses. When non-empty, only these pools are loaded, subscribed, updated, and used for routing. Empty preserves the default full load. A non-empty value with no valid address fails startup |
 | `ALLOWED_TOKEN_MINTS`  | Not set  | Comma-separated list of mint addresses; only markets touching at least two of these mints are loaded. Requires at least 2 addresses when set. If unset, all tokens are allowed |
 | `BLOCKED_DEX_PROGRAMS` | Not set  | DEX program ID denylist, comma-separated                                                                                                                                                        |
 | `ALLOWED_DEX_PROGRAMS` | Not set  | DEX program ID allowlist, comma-separated. Loads all if not set                                                                                                                                 |
@@ -104,8 +105,9 @@ value (never `0`), so on-chain `ComputationalBudgetExceeded` does not increase.
 ## JIT (DynamicRouteV1)
 
 JIT routing lets the on-chain router quote-and-pick among candidate pools at
-execution. The per-request `enableJit` opt-in gates it end-to-end; the env below
-is a machine-level circuit breaker independent of that request flag.
+execution. Per-request JIT is enabled by default and `enableJit=false` opts out
+end-to-end; the env below is a machine-level circuit breaker independent of
+that request flag.
 
 | Env Var                          | Default        | Description                                                                                                                                                                 |
 | -------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

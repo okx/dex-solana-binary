@@ -66,7 +66,7 @@ The rule is applied while searching, so Pallas can return the best legal alterna
 
 All IDs must be valid base58-encoded 32-byte program IDs. Validation happens before `enableUniqueDex` is applied, so an invalid `uniqueDexIds` value still returns `INVALID_DEX_ID` when the switch is `false`. In non-cyclic mode both fields have no routing effect.
 
-When `enableJit=true`, the same rule also filters JIT alternatives: a candidate cannot introduce a second use of a managed protocol on another hop, but replacing the target hop with another pool from its own protocol remains allowed.
+JIT is enabled by default (and can be disabled with `enableJit=false`). When enabled, the same rule also filters JIT alternatives: a candidate cannot introduce a second use of a managed protocol on another hop, but replacing the target hop with another pool from its own protocol remains allowed.
 
 ---
 

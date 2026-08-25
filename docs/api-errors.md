@@ -27,6 +27,7 @@ Both endpoints share parameter validation and routing logic; error codes are ide
 | 400  | `INVALID_TOKEN_PAIR`          | `fromTokenAddress == toTokenAddress` but `enableCyclicArbitrage=false`             |
 | 400  | `MISSING_INTERMEDIATE_TOKENS` | `enableCyclicArbitrage=true` but `cyclicArbitrageIntermediateTokens` not provided  |
 | 400  | `INVALID_INTERMEDIATE_TOKEN`  | `cyclicArbitrageIntermediateTokens` contains invalid base58 or not 32 bytes        |
+| 400  | `INVALID_ALLOWED_POOLS`       | `allowedPools` contains an empty, invalid base58, or non-32-byte pool address      |
 | 400  | `INVALID_DEX_ID`              | `dexIds` / `excludedDexIds` / `uniqueDexIds` contains invalid base58 or is not 32 bytes after decoding. `uniqueDexIds` is validated before `enableUniqueDex`, so invalid input is rejected even when the constraint is disabled |
 | 400  | `INVALID_POSITIVE_SLIPPAGE_PAIR`      | `positiveSlippageReceiverAddress` and `positiveSlippageBps` must be supplied together (XOR — both `Some` or both `None`) |
 | 400  | `INVALID_POSITIVE_SLIPPAGE_BPS`       | `positiveSlippageBps` outside the `[0, 1000]` range (contract `TRIM_RATE_LIMIT = 100`, i.e. ≤ 10%)                       |

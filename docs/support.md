@@ -34,7 +34,7 @@ Monitoring metrics:
 
 ## Built-in Checker (--check)
 
-Run `pallas --check` (or `-c`) to execute 9 diagnostic checks and exit without starting the main service. Useful for first-deploy validation or diagnosing runtime issues.
+Run `pallas --check` (or `-c`) to execute 8 diagnostic checks and exit without starting the main service. Useful for first-deploy validation or diagnosing runtime issues.
 
 ```bash
 ./pallas-darwin-aarch64 --env-file .env --check
@@ -63,7 +63,6 @@ Run `pallas --check` (or `-c`) to execute 9 diagnostic checks and exit without s
 6. Ready probe — `/ready` endpoint status
 7. Startup phase — current loading phase via `/metrics`
 8. Data coverage — pool count and DEX protocol count thresholds
-9. Quote probe — `/quote` endpoint functional test
 
 ### Integration Examples
 

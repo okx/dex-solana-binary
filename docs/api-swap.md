@@ -43,8 +43,10 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `tipsReceiver` | String | No | Custom destination (base58 32-byte Solana address) for the tip transfer. When set and valid, the single tip `SystemProgram::transfer` targets this address instead of a random Jito tip account, and the custom path has **no** `MIN_TIP_LAMPORTS` gate — the tip is emitted for any `tips > 0`. When omitted, all existing Jito behavior is unchanged (random account, `tips > 1000` gate). No pairing constraint with `tips` (a `tipsReceiver` without `tips` is accepted and simply has no effect). Empty / invalid base58 / non-32-byte → `INVALID_TIPS_RECEIVER` (validated before quoting; no fallback to a Jito account). |
 | `executionMode` | String | No | Default is `singleTx`. Selects the instruction-building mode: `singleTx` (default) builds a single swap instruction with an explicit input amount; `tokenLedger` derives the input amount on-chain from a token-ledger snapshot instead; `maxIn` swaps the entire source-token balance via an on-chain sentinel amount. Combined with `enableCyclicArbitrage`, this selects one of six instruction shapes (see [Cyclic Arbitrage Mode](cyclic-arbitrage)). On `/swap`: `executionMode=tokenLedger` **requires** `enableCyclicArbitrage=true` — the standalone (non-cyclic) token-ledger shape is rejected with `INVALID_TOKEN_LEDGER_MODE`, because a self-contained transaction has nothing funding the source token account after the ledger snapshot, so its on-chain input amount is always 0 and it can never execute; for the standalone shape, use [`POST /swap-instruction`](api-swap-instruction) and insert your own deposit instruction(s) after the snapshot. on `/swap`, `executionMode=maxIn` also **requires** `enableCyclicArbitrage=true` — the standalone (non-cyclic) Swap-Max shape is rejected here with `INVALID_SWAP_MODE`, because a self-contained transaction has no instruction funding the source token account before the Swap-Max sweep, so the swap would always execute against a zero/stale balance; for the standalone shape (a single `swap_tob_v3` in Swap-Max mode, caller supplies the funding instruction), use [`POST /swap-instruction`](api-swap-instruction), which accepts this combination |
 | `positiveSlippageReceiverAddress` | String | No | Recipient address that captures the positive-slippage portion when the on-chain `actual_amount_out` exceeds the quoted output. Must be paired with `positiveSlippageBps` (XOR — either both fields are set or both are omitted). See [Positive Slippage Capture](#positive-slippage-capture) |
-| `positiveSlippageBps` | Number | No | Positive-slippage capture rate in basis points (1 bps = 0.01%). Range `[0, 1000]` (i.e. ≤ 10%), and must be a multiple of `10` when greater than `0`. Must be paired with `positiveSlippageReceiverAddress`. See [Positive Slippage Capture](#positive-slippage-capture) |
-| `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount, replacing the value Pallas would otherwise derive from the quote. When set, it becomes the basis for the on-chain `min_out` (`min_out = expectAmountOut × (10000 − slippageBps) / 10000`) and for the response `tx.minReceiveAmount`; slippage is still applied once and `routerResult` still reflects the engine's quote. Must be `> 0` (passing `"0"` returns `INVALID_EXPECT_AMOUNT_OUT`). Omitted/`null` → behavior is unchanged (quote output is used). In cyclic-arbitrage mode it applies to the second leg only. |
+| `positiveSlippageBps` | Number | No | Positive-slippage capture rate in basis points (1 bps = 0.01%). Range `[0, 1000]` (i.e. ≤ 10%). Must be paired with `positiveSlippageReceiverAddress`. See [Positive Slippage Capture](#positive-slippage-capture) |
+| `arbFeeAddress` | String | No | Destination token account for m1 positive-slippage profit sharing. Missing, `null`, empty, invalid base58, or non-32-byte values disable m1 without failing the swap. A syntactically valid but unopened token account is passed through; the contract skips the transfer when the account has no data. See [Positive Slippage Capture](#positive-slippage-capture) |
+| `arbFeeBps` | Number | No | m1 share of positive-slippage profit in basis points. Default `0`; range `[0, 10000]`. A positive value cannot be combined with a positive `positiveSlippageBps`. See [Positive Slippage Capture](#positive-slippage-capture) |
+| `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount, replacing the value Pallas would otherwise derive from the quote. When set, it becomes the basis for the on-chain `min_out`, m1 profit, and response `tx.minReceiveAmount`; slippage is still applied once and `routerResult` remains the engine quote. Must be `> 0`. Omitted/`null` uses the quote. In cyclic-arbitrage mode it applies to the second leg only. |
 
 ---
 
@@ -52,21 +54,30 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 
 When `positiveSlippageReceiverAddress` and `positiveSlippageBps` are both supplied and `bps > 0`, the OKX router contract diverts a bounded share of any positive slippage (i.e. when the actual on-chain output exceeds the quoted output) to the receiver address; the remainder still goes to the user.
 
-**Formula** (contract `swap_with_fees.rs` / `fee.rs`):
+**m0 formula** (`positiveSlippageBps`):
 
 ```
-trim_rate    = (positiveSlippageBps / 10) as u8        // ∈ [0, 100]
 trim_amount  = min(
     actual_amount_out - expect_amount_out,             // surplus over quote
-    actual_amount_out × trim_rate / 1_000              // 0.1% precision cap
+    actual_amount_out × positiveSlippageBps / 10_000
 )
 ```
+
+**m1 formula** (`arbFeeBps`):
+
+```
+profit  = max(actual_amount_out - quoted_output, 0)
+arb_fee = floor((profit as u128 × arbFeeBps as u128) / 10_000)
+```
+
+When `expectAmountOut` is supplied, m1 uses it as `expected_output`; otherwise it uses the current `routerResult.toTokenAmount`. The transfer is emitted only when the computed fee is positive and the receiver token account is open.
 
 The trim only fires when the actual output exceeds the quote; if the swap lands at or below the quoted output, nothing is diverted and the receiver gets `0`.
 
 **Behavior notes**:
 
-- Omitting both fields (or supplying `bps = 0`) disables the feature — instruction bytes are bit-for-bit identical to the no-trim path.
+- Omitting the applicable fields (or supplying `bps = 0`) disables that fee mode. m0 and m1 cannot both have a positive rate.
+- Contract v3 encodes the selected rate as the original `u16` bps value in `TrimConfig.trim_rate`; m1 additionally sets `MultiCommissionConfig.flags` bit3. The writable receiver account is appended only when the mode is enabled.
 - **Cyclic arbitrage** (`enableCyclicArbitrage = true`): the first leg never applies trim (intermediate-token surplus has no user-protection meaning). The final leg of the cycle applies the user-supplied parameters.
 - **`maxAccounts`**: when trim is enabled, the swap instruction's account list contains one extra slot (the receiver). A request with `maxAccounts = 64` may therefore produce a transaction with 65 accounts. This is well below Solana's 256-account versioned-transaction ceiling.
 - **Protocol restriction (hard contract constraint)**: trim is only valid on SA-proxy protocols (e.g. BisonFi / AlphaQ / ZeroFi / TaurusFi). Enabling trim on a non-SA-proxy protocol (Raydium / Orca / Meteora / …) causes the on-chain instruction to fail with `SaAuthorityIsNone (6056)`. The API does not pre-reject such combinations because the final routed protocol set is not known until quote time — callers must restrict routing via `dexIds` when enabling trim.
@@ -140,7 +151,7 @@ This feature also applies in [cyclic-arbitrage mode](cyclic-arbitrage).
 |-------|------|-------------|
 | `from` | String | User's wallet address |
 | `to` | String | The contract address of OKX DEX router |
-| `minReceiveAmount` | String | The minimum amount of a token to buy when the price reaches the upper limit of slippage (e.g., `87084137`). Derived from the quote output by default; when `expectAmountOut` is supplied, it is derived from that override instead (same slippage formula). |
+| `minReceiveAmount` | String | The minimum amount of a token to buy when the price reaches the upper limit of slippage (e.g., `87084137`). Derived from the quote output by default; when `expectAmountOut` is supplied it is derived from that override, including when m1 is active. |
 | `slippagePercent` | String | The value of current transaction slippage |
 
 ---

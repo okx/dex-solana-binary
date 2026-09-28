@@ -34,6 +34,7 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `stableIntermediateTokensOnly` | Boolean | No | Default is `false`. When enabled, routing will restrict intermediate tokens to stablecoins (e.g. USDC, USDT) to reduce high-slippage path risk |
 | `enableJit` | Boolean | No | Default is `true`. JIT candidate-pool post-processing and transaction translation are enabled when omitted; set `false` to disable them for the request. See [JIT Candidate Pools](#jit-candidate-pools) |
 | `enableCyclicArbitrage` | Boolean | No | Default is `false`. When enabled, enables cyclic arbitrage mode. `fromTokenAddress` and `toTokenAddress` must be the same, forming a circular route. See [Cyclic Arbitrage Mode](cyclic-arbitrage) |
+| `useOkxSa` | Boolean | No | Default is `true`. Set `false` to use `userWalletAddress`'s ATA for every route leg, including multi-hop and cyclic-arbitrage routes; no SA accounts or intermediate SA ATA-creation instructions are used. |
 | `cyclicArbitrageIntermediateTokens` | String | No | Custom intermediate token mints, comma-separated. Only effective when `enableCyclicArbitrage` is `true`. See [Cyclic Arbitrage Mode](cyclic-arbitrage) for how these are used and sizing guidance |
 | `maxAccounts` | String | No | Provides an estimate of the maximum number of accounts that used for an instruction. It's useful when composing your own transaction, or if you want more precise resource accounting to optimize routing. Default: `64` |
 | `swapReceiverAddress` | String | No | Recipient address of a purchased token. If not set, `userWalletAddress` will receive a purchased token |
@@ -47,6 +48,10 @@ Returns an optimal swap quote and a base64-encoded unsigned Solana transaction. 
 | `arbFeeAddress` | String | No | Destination wallet for m1 positive-slippage profit sharing. Pallas derives its ATA for the final output mint and token program. Missing, `null`, empty, invalid base58, or non-32-byte values disable m1 without failing the swap. An unopened derived ATA causes the contract to skip the transfer. See [Positive Slippage Capture](#positive-slippage-capture) |
 | `arbFeeBps` | Number | No | m1 share of positive-slippage profit in basis points. Default `0`; range `[0, 10000]`. A positive value cannot be combined with a positive `positiveSlippageBps`. See [Positive Slippage Capture](#positive-slippage-capture) |
 | `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount, replacing the value Pallas would otherwise derive from the quote. When set, it becomes the basis for the on-chain `min_out`, m1 profit, and response `tx.minReceiveAmount`; slippage is still applied once and `routerResult` remains the engine quote. Must be `> 0`. Omitted/`null` uses the quote. In cyclic-arbitrage mode it applies to the second leg only. |
+
+### User transaction-account configuration
+
+`useOkxSa` is an optional `POST /swap` request parameter and defaults to `true`, preserving SA-proxy transaction assembly. When the caller sets `useOkxSa: false`, Pallas derives every leg's authority, source ATA, and destination ATA from `userWalletAddress`, including multi-hop and cyclic-arbitrage routes. For a normal multi-hop route, the caller must pre-create the user's ATA for every intermediate mint; Pallas does not create those intermediate user ATAs or any intermediate SA ATA.
 
 ---
 

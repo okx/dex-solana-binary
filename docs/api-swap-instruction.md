@@ -36,6 +36,7 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `stableIntermediateTokensOnly` | Boolean | No | Default is `false`. When enabled, routing will restrict intermediate tokens to stablecoins (e.g. USDC, USDT) to reduce high-slippage path risk |
 | `enableJit` | Boolean | No | Default is `true`. JIT candidate-pool post-processing is enabled when omitted; set `false` to disable it for the request. See [`POST /swap` → JIT Candidate Pools](api-swap#jit-candidate-pools) |
 | `enableCyclicArbitrage` | Boolean | No | Default is `false`. When enabled, enables cyclic arbitrage mode. `fromTokenAddress` and `toTokenAddress` must be the same, forming a circular route. See [Cyclic Arbitrage Mode](cyclic-arbitrage) |
+| `useOkxSa` | Boolean | No | Default is `true`. Set `false` to use `userWalletAddress`'s ATA for every route leg, including multi-hop and cyclic-arbitrage routes; no SA accounts or intermediate SA ATA-creation instructions are used. |
 | `cyclicArbitrageIntermediateTokens` | String | No | Custom intermediate token mints, comma-separated. Only effective when `enableCyclicArbitrage` is `true`. See [Cyclic Arbitrage Mode](cyclic-arbitrage) for how these are used and sizing guidance |
 | `maxAccounts` | String | No | Provides an estimate of the maximum number of accounts that used for an instruction. It's useful when composing your own transaction, or if you want more precise resource accounting to optimize routing. Default: `64` |
 | `swapReceiverAddress` | String | No | Recipient address of a purchased token. If not set, `userWalletAddress` will receive a purchased token |
@@ -49,6 +50,10 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `arbFeeAddress` | String | No | Destination wallet for m1 positive-slippage profit sharing. Pallas derives its ATA for the final output mint and token program. Missing, `null`, empty, invalid base58, or non-32-byte values disable m1 without failing the swap. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `arbFeeBps` | Number | No | m1 share of positive-slippage profit in basis points. Default `0`; range `[0, 10000]`. A positive value cannot be combined with a positive `positiveSlippageBps`. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount. Must be `> 0`; omitted/`null` uses the quote. In cyclic-arbitrage mode it applies to the second leg only. The override remains effective when m1 is active. |
+
+### User transaction-account configuration
+
+`useOkxSa` is an optional `POST /swap-instruction` request parameter and defaults to `true`, preserving SA-proxy transaction assembly. When the caller sets `useOkxSa: false`, Pallas derives every leg's authority, source ATA, and destination ATA from `userWalletAddress`, including multi-hop and cyclic-arbitrage routes. For a normal multi-hop route, the caller must pre-create the user's ATA for every intermediate mint; Pallas does not create those intermediate user ATAs or any intermediate SA ATA.
 
 > When positive-slippage capture is enabled, contract v3 encodes the original `u16` bps value in `TrimConfig.trim_rate`. For m0, Pallas derives and appends the supplied wallet's writable, non-signer ATA for the final output mint and token program. m1 additionally sets `MultiCommissionConfig.flags` bit3, derives the receiver ATA, and uses `expectAmountOut` as `expect_amount_out` when supplied, otherwise falling back to the current quote. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) for formulas and the SA-proxy protocol restriction.
 
@@ -108,7 +113,7 @@ The `setupInstructions` and `cleanupInstruction` fields handle Solana-specific t
 |---|---|---|---|
 | 1 | `createDestinationATA` | always 1 | **Always.** Uses the SPL `CreateIdempotent` variant, so it is a chain-side no-op when the user already owns the destination ATA. For Token-2022 destination mints, this instruction automatically targets the Token-2022 program. |
 | 2 | `createUserIntermediateATA` | 0 or 1 | Only when `enableCyclicArbitrage = true && executionMode != singleTx` — either `executionMode = maxIn` (two-instruction A2A split) or `executionMode = tokenLedger` (three-instruction A2A split with a literal ledger snapshot). Pre-creates the user's own intermediate-token ATA, which leg-1 (`swap_tob_v3`) writes to and leg-2 (`swap_tob_v3` Swap-Max, or `swap_tob_with_token_ledger_v3`) reads from as the two separate top-level instructions hand off the intermediate token. Not emitted for `executionMode = singleTx` (default, single whole-cycle `swap_tob_v3` instruction — no user-owned intermediate ATA hand-off needed). |
-| 3 | `createIntermediateSaATA[…]` | 0 or more | Only when the route has ≥ 2 hops **and** an intermediate mint is not in the server's base-token whitelist (SOL / USDC / USDT / …). These create the router service-account (SA) ATAs that hold balances between hops. |
+| 3 | `createIntermediateSaATA[…]` | 0 or more | Only when the request has `useOkxSa=true`, the route has ≥ 2 hops, and an intermediate mint is not in the server's base-token whitelist (SOL / USDC / USDT / …). These create the router service-account (SA) ATAs that hold balances between hops. When `useOkxSa=false`, this segment is never emitted. |
 | 4 | wSOL **wrap triplet**: `wrapSolCreateATA` + `systemTransfer` + `syncNative` | always 3 (as a unit) | Only when `fromTokenAddress` is native SOL (`11111…1`). The three instructions are always emitted together. |
 
 ### cleanupInstruction
@@ -165,7 +170,7 @@ setupInstructions = [
 cleanupInstruction = null
 ```
 
-If `X` were USDC (on the base-token whitelist), the matching entry would be skipped and the length would drop to 2.
+If `X` were USDC (on the base-token whitelist), the matching entry would be skipped and the length would drop to 2. When `useOkxSa=false`, both SA entries are absent and the length is 1.
 
 #### 5. Cyclic arbitrage, SPL ⇆ SPL (A → B → A)
 
@@ -174,7 +179,7 @@ setupInstructions = [
   createDestATA(A),                                  // dest = source = A, still emitted (idempotent)
   createUserIntermediateATA(B),                      // leg-2's source_token_account (swap_tob_v3 Swap-Max, or swap_tob_with_token_ledger_v3)
   createIntermediateSaATA(B),                        // if B is off the whitelist
-]                                                     // length 3 (or 2 if B is whitelisted)
+]                                                     // length 3 (or 2 if B is whitelisted; 2 when useOkxSa=false)
 cleanupInstruction = null
 ```
 
@@ -186,7 +191,7 @@ Note: the cyclic route is split between two ix — `swapInstruction` carries leg
 setupInstructions = [
   createDestATA(wSOL),                               // ┐ both point at U's wSOL ATA;
   createUserIntermediateATA(B),                      // │ duplication is intentional —
-  createIntermediateSaATA(B),                        // │ do NOT deduplicate client-side.
+  createIntermediateSaATA(B),                        // │ absent when useOkxSa=false; do NOT deduplicate client-side.
   wrapCreateATA(wSOL),                               // ┘
   systemTransfer(amount lamports → U's wSOL ATA),
   syncNative(U's wSOL ATA),

@@ -130,3 +130,17 @@ that request flag.
 | ----------- | ------- | ------------------------------------------------ |
 | `LOG_LEVEL` | `info`  | Log level (e.g. `info`, `debug`)                 |
 | `LOG_JSON`  | `false` | JSON-formatted log output                        |
+
+## Token-2022 quote fees
+
+| Env Var | Default | Description |
+| --- | --- | --- |
+| `TOKEN_FEE_WRAPPER_ENABLED` | `false` | Apply mint transfer fees and additional SA boundary transfer fees during routing. Startup-only. |
+
+Use `--token-fee-wrapper-enabled true` to enable or `--token-fee-wrapper-enabled false` to disable. An explicit CLI value overrides the environment variable. The effective configuration and startup log expose the selected value.
+
+When enabled, mint fee configurations are loaded once from the initial pool set; missing or invalid configurations are treated as untaxed. Subsequent mint additions and updates are not loaded. Quotes reflect user net output before slippage. With `useOkxSa=true`, single-hop swaps also use SA accounts so quoted transfer fees match construction.
+
+When disabled, quotes include protocol trading fees only; no additional mint initialization RPC is issued, and existing account-selection behavior is retained. The default stays off until live validation has completed and a separate default change is approved.
+
+A2A split execution (`enableCyclicArbitrage=true` with `executionMode=maxIn/tokenLedger`) bypasses the wrapper even when enabled; taxed tokens in these modes are outside this release's scope. Single-transaction cycles continue to apply the wrapper.

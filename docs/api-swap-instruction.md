@@ -40,8 +40,8 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `cyclicArbitrageIntermediateTokens` | String | No | Custom intermediate token mints, comma-separated. Only effective when `enableCyclicArbitrage` is `true`. See [Cyclic Arbitrage Mode](cyclic-arbitrage) for how these are used and sizing guidance |
 | `maxAccounts` | String | No | Provides an estimate of the maximum number of accounts that used for an instruction. It's useful when composing your own transaction, or if you want more precise resource accounting to optimize routing. Default: `64` |
 | `swapReceiverAddress` | String | No | Recipient address of a purchased token. If not set, `userWalletAddress` will receive a purchased token |
-| `computeUnitPrice` | String | No | Used for transactions on the Solana network and similar to gasPrice on Ethereum. This price determines the priority level of the transaction. The higher the price, the more likely that the transaction can be processed faster |
-| `computeUnitLimit` | String | No | Used for transactions on the Solana network and analogous to gasLimit on Ethereum, which ensures that the transaction won't take too much computing resource. If the parameter `tips` is not `0`, then `computeUnitLimit` should be set to `0`. Otherwise, the fee is wasted |
+| `computeUnitPrice` | String | No | Priority fee price in micro-lamports per compute unit. For v1, the total priority fee is `ceil(computeUnitPrice × effectiveCU / 1_000_000)` lamports; Jito tips are separate |
+| `computeUnitLimit` | String | No | Compute-unit budget. Omitted uses the server's estimate. For v1, the effective limit is capped at `1400000` and stored in the transaction config instead of a ComputeBudget instruction. An explicit `0` remains a zero execution budget, even when `tips` is set |
 | `tips` | String | No | Jito tips in lamports. This is used for MEV protection |
 | `tipsReceiver` | String | No | Custom destination (base58 32-byte Solana address) for the tip transfer. When set and valid, the `tipInstruction` targets this address instead of a random Jito tip account, and the custom path has **no** `MIN_TIP_LAMPORTS` gate — the tip is emitted for any `tips > 0`. When omitted, Jito behavior is unchanged (random account, `tips > 1000` gate). No pairing constraint with `tips`. Empty / invalid base58 / non-32-byte → `INVALID_TIPS_RECEIVER` (validated before quoting). |
 | `executionMode` | String | No | Default is `singleTx`. `tokenLedger` (non-cyclic, `enableCyclicArbitrage=false`): `swapInstruction` derives its input amount on-chain from the token-ledger delta instead of a fixed amount — insert your own deposit instruction(s) between `tokenLedgerInstruction` and `swapInstruction`, and the deposited amount becomes the swap input. This standalone shape is supported **only** on this endpoint (`/swap` rejects it with `INVALID_TOKEN_LEDGER_MODE`, since a self-contained transaction has no deposit and its input amount would always be 0). `maxIn` (non-cyclic, `enableCyclicArbitrage=false`) is a composition primitive with the same endpoint restriction: `swapInstruction` is a single `swap_tob_v3` encoded in Swap-Max mode (`amount_in` = sentinel `u64::MAX`, resolved on-chain to the full source-ATA balance at execution time), `tokenLedgerInstruction` is `null`, and `otherInstructions` is empty — insert your own funding instruction(s) (a deposit, a preceding swap's output landing in that ATA, etc.) before `swapInstruction` in your own transaction. This shape is also supported **only** on this endpoint (`/swap` rejects it with `INVALID_SWAP_MODE`, since a self-contained transaction has no instruction funding the source token account before the Swap-Max sweep). With `enableCyclicArbitrage=true`, `executionMode` instead selects the cyclic instruction shape: `singleTx` (default) → single whole-cycle instruction, `tokenLedger` → three-instruction A2A split reusing the literal ledger mechanism, `maxIn` → two-instruction A2A split using an on-chain Swap-Max sentinel instead of a ledger snapshot |
@@ -50,6 +50,7 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | `arbFeeAddress` | String | No | Destination wallet for m1 positive-slippage profit sharing. Pallas derives its ATA for the final output mint and token program. Missing, `null`, empty, invalid base58, or non-32-byte values disable m1 without failing the swap. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `arbFeeBps` | Number | No | m1 share of positive-slippage profit in basis points. Default `0`; range `[0, 10000]`. A positive value cannot be combined with a positive `positiveSlippageBps`. See [`POST /swap` → Positive Slippage Capture](api-swap#positive-slippage-capture) |
 | `expectAmountOut` | String | No | Caller-supplied override for the swap instruction's expected output amount. Must be `> 0`; omitted/`null` uses the quote. In cyclic-arbitrage mode it applies to the second leg only. The override remains effective when m1 is active. |
+| `transactionVersion` | Number | No | Solana transaction version: integer `0` (v0) or `1` (v1). Omitted or `null` defaults to `0`. Strings are not accepted. No automatic version upgrade or fallback. See [API errors](api-errors) for invalid values |
 
 ### User transaction-account configuration
 
@@ -63,16 +64,18 @@ Request parameters are identical to [`POST /swap`](api-swap).
 | Field | Type | Description |
 |-------|------|-------------|
 | `tokenLedgerInstruction` | Instruction | Token ledger snapshot instruction. Present for `executionMode=tokenLedger` in either mode: non-cyclic (`enableCyclicArbitrage=false`), where it snapshots the source ATA and pairs with `swapInstruction`; or cyclic A2A (`enableCyclicArbitrage=true`), where it snapshots the intermediate-token ATA that leg-1 (`swapInstruction`) is about to deposit into. In assembly order it runs **before** `swapInstruction` (leg-1), not between leg-1 and leg-2 (`otherInstructions[0]`, `swap_tob_with_token_ledger_v3`) — the snapshot must precede the deposit, since the contract derives leg-2's `amount_in` as `current_balance − snapshot`. For `executionMode=maxIn` (standalone non-cyclic or cyclic A2A), this field is always `null` — the standalone shape has no ledger snapshot at all (`swapInstruction` alone is the Swap-Max composition primitive), and in cyclic A2A, Leg2 (`otherInstructions[0]`) uses contract v3 `swap_tob_v3` (Swap-Max) instead of a ledger snapshot |
-| `computeBudgetInstructions` | Instruction[] | Compute budget instructions: `[SetComputeUnitLimit, SetComputeUnitPrice]`. When the route spans **4 or more pools** (JIT candidate pools counted individually), a `RequestHeapFrame` is inserted between them — `[SetComputeUnitLimit, RequestHeapFrame, SetComputeUnitPrice]` — to grow the on-chain heap (64KB–256KB, scaling with pool count) and avoid heap overflow |
+| `computeBudgetInstructions` | Instruction[] | Empty for v1; use `transactionConfig` instead. For default/v0, compute budget instructions: `[SetComputeUnitLimit, SetComputeUnitPrice]`. When the route spans **4 or more pools** (JIT candidate pools counted individually), a `RequestHeapFrame` is inserted between them — `[SetComputeUnitLimit, RequestHeapFrame, SetComputeUnitPrice]` — to grow the on-chain heap (64KB–256KB, scaling with pool count) and avoid heap overflow |
 | `setupInstructions` | Instruction[] | Token-account housekeeping ran **before** the swap (ATA creation + native-SOL wrap). Always non-empty. See [Setup & Cleanup Instructions](#setup--cleanup-instructions) |
 | `swapInstruction` | Instruction | Core swap instruction |
 | `cleanupInstruction` | Instruction | Token-account housekeeping ran **after** the swap. `null` unless the user is receiving native SOL — in that case it unwraps the wSOL ATA back to native SOL. See [Setup & Cleanup Instructions](#setup--cleanup-instructions) |
 | `otherInstructions` | Instruction[] | Additional instructions (e.g. cyclic arbitrage second leg) |
 | `tipInstruction` | Instruction | Jito tip transfer instruction (present when `tips` is set). Destination is a random Jito tip account by default, or `tipsReceiver` when that field is supplied. The response schema is unchanged — the custom receiver only changes the transfer's destination account. |
-| `addressLookupTableAddresses` | String[] | Address Lookup Table Account. Used to optimize the management and referencing of addresses in transactions by storing related addresses in a table and referencing them via index values |
+| `addressLookupTableAddresses` | String[] | Address lookup table accounts used to compile a v0 transaction. Empty for v1, which stores all account addresses inline |
 | `prioritizationFeeLamports` | String | Total prioritization fee in lamports |
 | `blockhashWithMetadata` | BlockhashMetadata | Recent blockhash and its last valid block height |
 | `routerResult` | QuoteResponse | Quote path data (see [`POST /swap`](api-swap)) |
+| `transactionVersion` | Number | Transaction version. Present as integer `1` only for v1 requests; omitted for default/v0 requests |
+| `transactionConfig` | TransactionConfig | Suggested v1 message configuration. Present only for v1 requests; omitted for default/v0 requests |
 
 ### Instruction
 
@@ -96,6 +99,17 @@ Request parameters are identical to [`POST /swap`](api-swap).
 |-------|------|-------------|
 | `blockhash` | String | Recent blockhash (base58) |
 | `lastValidBlockHeight` | String | Last valid block height for this blockhash |
+
+### TransactionConfig
+
+Returned only for v1 requests. Apply these values to the v1 message configuration, not to ComputeBudget instructions.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `computeUnitLimit` | Number | Compute-unit budget. Uses the request override or the server's estimate, capped at `1400000`. An explicit `0` remains a zero execution budget |
+| `loadedAccountsDataSizeLimit` | Number | Loaded-account-data limit in bytes. Fixed at `67108864` (64 MiB) |
+| `heapSize` | Number | Heap size in bytes. Default: `32768` (32 KiB); increased when required by the route's pool count |
+| `priorityFeeLamports` | String | Total priority fee in lamports: `ceil(computeUnitPrice × computeUnitLimit / 1_000_000)`. Equal to `prioritizationFeeLamports`; excludes Jito tips |
 
 ---
 
@@ -236,7 +250,7 @@ Two ordering rules are load-bearing:
 
 With `executionMode=tokenLedger` (non-cyclic), insert your own deposit instruction(s) between 3 and 4 — the on-chain input amount is the balance delta since the snapshot. With `executionMode=maxIn` (non-cyclic), `tokenLedgerInstruction` is `null` (no step 3), so insert your own funding instruction(s) directly before 4 (`swapInstruction`) — the swap resolves its input as the full source-ATA balance at execution time.
 
-Use `addressLookupTableAddresses` to fetch ALTs for building a Versioned Transaction, then sign and submit.
+For default/v0, use `addressLookupTableAddresses` to fetch ALTs and compile the transaction. For v1, `computeBudgetInstructions` and `addressLookupTableAddresses` are empty: apply `transactionConfig` and compile with a v1-capable compiler. After adding or changing instructions, reassess the budget and total priority fee, and check the final limits: 4096 bytes, 64 distinct accounts, 64 instructions and 12 signatures. This endpoint does not trim JIT candidates or validate the final composed transaction. Sign with a v1-capable signer and use base64 when submitting or simulating; confirm that the target RPC, wallet and Jito service (if used) support v1.
 
 ---
 

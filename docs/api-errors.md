@@ -38,6 +38,7 @@ Both endpoints share parameter validation and routing logic; error codes are ide
 | 400  | `INVALID_TIPS_RECEIVER`               | `tipsReceiver` is empty, invalid base58, or not 32 bytes after decoding. Validated before quoting; no fallback to a Jito account. Omitting the field is accepted; sending `null` is a parse error (422). |
 | 400  | `INVALID_TOKEN_LEDGER_MODE`           | **`/swap` only.** `executionMode=tokenLedger` without `enableCyclicArbitrage=true`. A self-contained `/swap` transaction has nothing funding the source token account after the ledger snapshot, so its on-chain input amount is always 0 and execution always fails (on-chain error 6011). Use `/swap-instruction` and insert your own deposit instruction(s) between `tokenLedgerInstruction` and `swapInstruction`. |
 | 400  | `INVALID_SWAP_MODE`                   | **`/swap` only.** `executionMode=maxIn` without `enableCyclicArbitrage=true`. A self-contained `/swap` transaction has no instruction funding the source token account before the Swap-Max sweep, so the swap would always execute against a zero/stale balance. `/swap-instruction` accepts this combination as a composition primitive: it returns a single `swapInstruction` = `swap_tob_v3` encoded in Swap-Max mode (`amount_in` = sentinel `u64::MAX`, resolved on-chain to the full source-ATA balance at execution time; `tokenLedgerInstruction=null`, `otherInstructions=[]`) — insert your own funding instruction(s) before `swapInstruction`. |
+| 400  | `INVALID_TRANSACTION_VERSION` | `transactionVersion` is a non-negative integer within u64 other than `0` or `1`. Message: `transactionVersion must be 0 or 1`. Omitted/`null` defaults to v0. Strings (including `"v0"`, `"v1"`, `"0"` and `"1"`), negative numbers, floating-point numbers, booleans, arrays, objects and numbers outside u64 are JSON parsing errors (422) |
 
 
 ## Routing Errors
@@ -63,10 +64,11 @@ Both endpoints share parameter validation and routing logic; error codes are ide
 | 200  | `SLIPPAGE_EXCEEDED`     | Business       | Slippage limit exceeded                                            |
 | 200  | `BLOCKHASH_EXPIRED`     | Business       | Blockhash has expired                                              |
 | 200  | `BUILD_FAILED`          | Business       | Transaction build failed                                           |
-| 200  | `TRANSACTION_TOO_LARGE` | Business       | Transaction exceeds 1232 bytes; retry with a smaller `maxAccounts` |
+| 200  | `TRANSACTION_TOO_LARGE` | Business       | Full transaction exceeds the selected version's byte limit (v0: 1232; v1: 4096); retry with a smaller `maxAccounts` |
 | 400  | `INSUFFICIENT_FUNDS`    | User           | Insufficient funds                                                 |
 | 200  | `BLOCKHASH_UNAVAILABLE` | Business       | Blockhash cache unavailable                                        |
 | 501  | `NOT_IMPLEMENTED`       | System         | Feature not implemented                                            |
+| 200  | `TRANSACTION_LIMIT_EXCEEDED` | Business       | Full v1 transaction exceeds 64 distinct accounts or 64 instructions |
 
 
 ## Service-Level Errors
